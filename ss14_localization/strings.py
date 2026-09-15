@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .filesystem import iter_files, read_text, write_text_if_changed
+from .fluent import FluentSyntaxError, entries, entry_id, parse_resource, serialize_resource, syntax
+
+
+@dataclass(frozen=True)
+class SyncResult:
+    scanned_files: int
+    changed_files: int
+    added_messages: int
+
+    def __add__(self, other):
+        return SyncResult(self.scanned_files + other.scanned_files,
+                          self.changed_files + other.changed_files,
+                          self.added_messages + other.added_messages)
+
+
+@dataclass
+class PrepareTargetFilesResult:
+    target_files: tuple[Path, ...]
+    prepared_files: int
+    skipped_existing_messages: int = 0
+    dry_run_missing_files: int = 0
+    added_messages: int = 0
+    moved_messages: int = 0
+    planned_texts: dict[Path, str] = field(default_factory=dict)
+    changed_paths: tuple[Path, ...] = ()
+
+
+def _merged_entry(source, translated):
+    result = source.clone()
+    if translated is None:
+        return result
+    if type(source) is not type(translated):
+        raise ValueError(f"Конфликт типов ключа {entry_id(source)}")
+    if translated.value is not None:
+        result.value = translated.value.clone()
+    existing = {attribute.id.name: attribute for attribute in translated.attributes}
+    result.attributes = [existing.get(attribute.id.name, attribute).clone() for attribute in source.attributes]
+    # Target-only attributes are not silently deleted.
+    result.attributes.extend(attribute.clone() for attribute in translated.attributes
+                             if attribute.id.name not in {a.id.name for a in source.attributes})
+    return result
+
+
+def _read_resource(path):
+    try:
+        return parse_resource(read_text(path))
+    except FluentSyntaxError as error:
+        raise FluentSyntaxError(f"{path}: {error}") from error
+
+
+def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool):
+    ast = syntax().ast
+    sources = {}
+    owners = {}
+    source_origins = {}
+    for source_path, target_path in sorted(pairs.items()):
+        resource = _read_resource(source_path)
+        sources[target_path] = resource
+        for key, node in entries(resource).items():
+            if key in owners:
+                raise ValueError(f"Ключ {key} повторяется в исходной локали: {source_origins[key]} и {source_path}")
+            owners[key] = target_path
+            source_origins[key] = source_path
+
+    target_paths = set(iter_files(target_root, ".ftl")) | set(pairs.values())
+    targets = {path: _read_resource(path) for path in sorted(target_paths) if path.exists()}
+    known = {}
+    origins = {}
+    for path, resource in targets.items():
+        for key, node in entries(resource).items():
+            if key in known and not node.equals(known[key], ignored_fields=["span", "comment"]):
+                raise ValueError(f"Разные переводы ключа {key}: {origins[key]} и {path}. "
+                                 "Разрешите конфликт перед подготовкой.")
+            if key not in known or owners.get(key) == path:
+                known[key], origins[key] = node, path
+
+    plans = {}
+    added = moved = 0
+    for path, source_resource in sources.items():
+        resource = source_resource.clone()
+        for index, node in enumerate(resource.body):
+            if not isinstance(node, (ast.Message, ast.Term)):
+                continue
+            key = entry_id(node)
+            resource.body[index] = _merged_entry(node, known.get(key))
+            added += key not in known
+            moved += key in origins and origins[key] != path
+        if path in targets:
+            resource.body.extend(node.clone() for node in targets[path].body
+                                 if isinstance(node, (ast.Message, ast.Term)) and entry_id(node) not in owners)
+        plans[path] = serialize_resource(resource)
+
+    for path, resource in targets.items():
+        if path in sources:
+            continue
+        kept = [node.clone() for node in resource.body
+                if not isinstance(node, (ast.Message, ast.Term)) or entry_id(node) not in owners]
+        plans[path] = serialize_resource(ast.Resource(kept))
+
+    # Validate the complete plan before touching any existing files.
+    changed = []
+    for path, text in plans.items():
+        parse_resource(text)
+        if (read_text(path) if path.exists() else "") != text:
+            changed.append(path)
+            action = "создать" if not path.exists() else ("удалить" if not text.strip() else "обновить")
+            print(f"Подготовка: {action} {path}")
+    if not dry_run:
+        for path in changed:
+            text = plans[path]
+            if not text.strip():
+                if path.exists():
+                    path.unlink()
+            else:
+                write_text_if_changed(path, text)
+    return PrepareTargetFilesResult(
+        tuple(sorted(sources)), len(changed),
+        dry_run_missing_files=sum(not path.exists() for path in sources) if dry_run else 0,
+        added_messages=added, moved_messages=moved,
+        planned_texts=plans, changed_paths=tuple(sorted(changed)),
+    )
+
+
+def prepare_target_files(source_culture_root: Path, target_culture_root: Path,
+                         relative_roots: list[Path], dry_run: bool = False):
+    source_culture_root = source_culture_root.resolve()
+    target_culture_root = target_culture_root.resolve()
+    if not source_culture_root.is_dir():
+        raise FileNotFoundError(f"Не найдена исходная локаль: {source_culture_root}")
+    if (source_culture_root == target_culture_root or
+            source_culture_root in target_culture_root.parents or
+            target_culture_root in source_culture_root.parents):
+        raise ValueError("Исходная и целевая локали должны быть разными непересекающимися папками")
+    pairs = {}
+    for relative in relative_roots:
+        root = (source_culture_root / relative).resolve()
+        if root != source_culture_root and source_culture_root not in root.parents:
+            raise ValueError(f"Путь выходит за пределы исходной локали: {relative}")
+        if not root.exists():
+            raise FileNotFoundError(root)
+        paths = [root] if root.is_file() else iter_files(root, ".ftl")
+        for path in paths:
+            if path.suffix == ".ftl":
+                pairs[path] = target_culture_root / path.relative_to(source_culture_root)
+    return _prepare(pairs, target_culture_root, dry_run)
+
+
+def sync_locale_strings(source_root: Path, target_root: Path, dry_run: bool = False):
+    result = prepare_target_files(source_root, target_root, [Path(".")], dry_run)
+    return SyncResult(len(result.target_files), result.prepared_files, result.added_messages)
+
+
+def filter_messages_missing_from_locale(source_text: str, target_locale_root: Path):
+    from .fluent import message_map
+    known = set()
+    for path in iter_files(target_locale_root, ".ftl"):
+        known.update(message_map(read_text(path)))
+    return [message for key, message in message_map(source_text).items() if key not in known]
+
+
+def write_missing_messages_for_file(source_path: Path, target_path: Path, target_locale_root: Path,
+                                    relative: Path, dry_run: bool = False):
+    if target_locale_root.resolve() not in target_path.resolve().parents:
+        raise ValueError("Целевой файл должен находиться в указанной целевой локали")
+    if target_locale_root.resolve() in source_path.resolve().parents:
+        raise ValueError("Исходный файл не должен находиться в целевой локали")
+    if target_path.resolve() == source_path.resolve():
+        raise ValueError("Исходный и целевой файл совпадают")
+    result = _prepare({source_path.resolve(): target_path.resolve()}, target_locale_root.resolve(), dry_run)
+    return result.added_messages, bool(result.prepared_files)

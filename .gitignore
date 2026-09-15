@@ -1,0 +1,56 @@
+# Локально установленные библиотеки
+.deps/
+
+# Кэш и скомпилированные файлы Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Сборка и публикация пакетов
+build/
+dist/
+downloads/
+*.egg-info/
+.eggs/
+*.egg
+pip-wheel-metadata/
+
+# Проверки, тесты и покрытие
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# Редакторы
+.idea/
+.vscode/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Секреты и локальные настройки
+.env
+.env.*
+!.env.example
+*.local
+
+# Временные файлы и журналы
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+localization-*.json

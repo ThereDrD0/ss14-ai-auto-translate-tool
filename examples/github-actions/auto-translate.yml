@@ -1,0 +1,79 @@
+# Скопируйте в .github/workflows/auto-translate.yml основного репозитория игры.
+name: Автоматический перевод локализации
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # Каждый день в 03:17 UTC.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Пробный запуск без ИИ и без записи переводов
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-localization
+  cancel-in-progress: false
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      TOOL_PATH: Tools/ss14-ai-auto-translate-tool
+      TRANSLATE_SOURCE_CULTURE: ${{ vars.TRANSLATE_SOURCE_CULTURE || 'en-US' }}
+      TRANSLATE_TARGET_CULTURE: ${{ vars.TRANSLATE_TARGET_CULTURE || 'ru-RU' }}
+      TRANSLATE_AI_BASE_URL: ${{ vars.TRANSLATE_AI_BASE_URL }}
+      TRANSLATE_AI_MODEL: ${{ vars.TRANSLATE_AI_MODEL }}
+      TRANSLATE_AI_KEYS: ${{ secrets.TRANSLATE_AI_KEYS }}
+      TRANSLATE_AI_MAX_OUTPUT_TOKENS: ${{ vars.TRANSLATE_AI_MAX_OUTPUT_TOKENS || '8192' }}
+      TRANSLATE_AI_OUTPUT_EXPANSION: ${{ vars.TRANSLATE_AI_OUTPUT_EXPANSION || '3' }}
+      TRANSLATE_AI_OUTPUT_SAFETY: ${{ vars.TRANSLATE_AI_OUTPUT_SAFETY || '0.65' }}
+      TRANSLATE_CONCURRENCY: ${{ vars.TRANSLATE_CONCURRENCY || '2' }}
+      TRANSLATE_AI_MAX_ATTEMPTS: '5'
+      TRANSLATE_AI_RESPONSE_MAX_ATTEMPTS: '3'
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Проверить настройки
+        run: |
+          if [ "$DRY_RUN" != true ] && { [ -z "$TRANSLATE_AI_KEYS" ] || [ -z "$TRANSLATE_AI_BASE_URL" ] || [ -z "$TRANSLATE_AI_MODEL" ]; }; then
+            echo 'API не настроен. Автоматический перевод пропущен.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Перевести локализацию
+        id: translation
+        if: env.DRY_RUN == 'true' || (env.TRANSLATE_AI_KEYS != '' && env.TRANSLATE_AI_BASE_URL != '' && env.TRANSLATE_AI_MODEL != '')
+        run: |
+          extra=()
+          if [ "$DRY_RUN" = true ]; then extra+=(--dry-run); fi
+          python "$TOOL_PATH/ci.py" --report-json "$RUNNER_TEMP/localization-report.json" "${extra[@]}"
+      - name: Сохранить отчёт
+        if: always() && env.DRY_RUN != 'true' && steps.translation.conclusion != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: localization-report
+          path: ${{ runner.temp }}/localization-report.json
+          if-no-files-found: warn
+      - name: Создать или обновить запрос на слияние
+        if: ${{ !cancelled() && env.DRY_RUN != 'true' && steps.translation.conclusion != 'skipped' }}
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.LOCALIZATION_GITHUB_TOKEN || github.token }}
+          branch: automation/ai-localization
+          add-paths: Resources/Locale
+          commit-message: Автоматическое обновление локализации
+          title: Автоматическое обновление локализации
+          body: |
+            Переводы подготовлены ИИ. Проверьте формулировки и отчёт запуска.
+            При ошибке сервиса сохранены успешно переведённые части; оставшиеся будут обработаны следующим запуском.
+          draft: true

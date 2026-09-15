@@ -1,0 +1,8 @@
+httpx>=0.27,<1
+ruamel.yaml>=0.18,<1
+fluent.syntax>=0.19,<1
+lingua-language-detector>=2.0,<3
+langcodes>=3.4,<4
+regex>=2024.5
+# Необязательно: требуется только для явно выбранной кодировки токенизатора.
+tiktoken>=0.7,<1
