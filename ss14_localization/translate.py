@@ -114,6 +114,7 @@ def _validate_translated_message(source, translated, checker=None, pass_list=Non
     assert_structure(source_resource, target_resource)
     source_nodes, target_nodes = entries(source_resource), entries(target_resource)
     pass_list = pass_list or (checker.pass_list if checker else PassList())
+    visible_text = []
     for key in source_nodes:
         source_node, target_node = source_nodes[key], target_nodes[key]
         source_patterns = ([source_node.value] if source_node.value else []) + [a.value for a in source_node.attributes]
@@ -125,6 +126,7 @@ def _validate_translated_message(source, translated, checker=None, pass_list=Non
                     raise TranslationValidationError(f"ИИ переписал уже переведённое или разрешённое поле для {key}")
         source_text = "\n".join(visible_parts(source_nodes[key]))
         target_text = "\n".join(visible_parts(target_nodes[key]))
+        visible_text.append(target_text)
         from .fluent import RICH_TAG_RE, RICH_TAG_NAMES
         source_tags = [m.group(0) for m in RICH_TAG_RE.finditer(source_text) if m.group(2).lower() in RICH_TAG_NAMES]
         target_tags = [m.group(0) for m in RICH_TAG_RE.finditer(target_text) if m.group(2).lower() in RICH_TAG_NAMES]
@@ -136,8 +138,8 @@ def _validate_translated_message(source, translated, checker=None, pass_list=Non
         if re.findall(r"https?://\S+", source_text) != re.findall(r"https?://\S+", target_text):
             raise TranslationValidationError(f"ИИ изменил адрес ссылки для {key}")
         pass_list.assert_preserved(source_text, target_text)
-        if checker:
-            checker.validate(target_nodes[key])
+    if checker:
+        checker.validate_text("\n".join(visible_text))
 
 
 def _parse_translation_response(response, expected, target_culture=None, checker=None):

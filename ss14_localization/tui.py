@@ -49,7 +49,7 @@ def _cache_path(repo: Path, source: str, target: str) -> Path:
 def _load_cache(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if data.get("version") == 2 else {}
+        return data if data.get("version") == 3 else {}
     except (OSError, ValueError, AttributeError):
         return {}
 
@@ -487,7 +487,7 @@ def create_app(repo: Path):
                         verified = {}
                     verified = {name: digest for name, digest in verified.items()
                                 if name in target_hashes and target_hashes[name] == digest}
-                cache = {"version": 2, "source": source_digest, "checker": checker_key,
+                cache = {"version": 3, "source": source_digest, "checker": checker_key,
                          "prepared": inventory if prep_safe else None, "verified": verified}
                 _save_cache(cache_path, cache)
                 self.call_from_thread(self._new_stage, "Перевод", len(files))

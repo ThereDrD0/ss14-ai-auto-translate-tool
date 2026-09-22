@@ -199,6 +199,25 @@ class LanguageTests(unittest.TestCase):
         self.assertEqual(self.ru.ratio("Desert Eagle — мощное оружие"), 1)
         self.assertLess(self.ru.ratio("[Hello World]"), .8)
 
+    def test_language_share_is_combined_across_fields(self):
+        text = ("ent-WeaponSubMachineGunSP91RC = SP-91-RC\n"
+                "    .desc = Компактный пистолет-пулемёт для контроля беспорядков.\n")
+        node = entries(parse_resource(text))["ent-WeaponSubMachineGunSP91RC"]
+        self.assertLess(self.ru.ratio("SP-91-RC"), .5)
+        self.ru.validate(node)
+        self.assertFalse(self.ru.needs_translation(node))
+        english = entries(parse_resource("name = SP-91-RC\n    .desc = Compact submachine gun.\n"))["name"]
+        self.assertTrue(self.ru.needs_translation(english))
+        self.assertLess(self.ru.ratio("HELLO WORLD"), .5)
+
+    def test_response_language_share_is_combined_across_messages(self):
+        source = "code = SP-91-RC\ndescription = Compact submachine gun.\n"
+        translated = "code = SP-91-RC\ndescription = Компактный пистолет-пулемёт для контроля беспорядков.\n"
+        self.assertEqual(set(_parse_translation_response(translated, message_map(source), checker=self.ru)),
+                         {"code", "description"})
+        with self.assertRaises(ValueError):
+            _parse_translation_response(source, message_map(source), checker=self.ru)
+
     def test_pass_boundaries_case_and_preservation(self):
         passed = PassList(("ID", "Desert Eagle"))
         self.assertEqual(passed.strip("identity"), "identity")

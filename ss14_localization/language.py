@@ -144,11 +144,13 @@ class LanguageChecker:
         return accepted / total
 
     def needs_translation(self, node) -> bool:
-        return any(self.ratio(part) < self.minimum_ratio for part in visible_parts(node))
+        return self.ratio("\n".join(visible_parts(node))) < self.minimum_ratio
 
     def validate(self, node):
-        for index, part in enumerate(visible_parts(node)):
-            ratio = self.ratio(part)
-            if ratio < self.minimum_ratio:
-                raise ValueError(f"Поле {index + 1}: доля {self.target_culture} составляет {ratio:.0%}, "
-                                 f"требуется не менее {self.minimum_ratio:.0%} (без pass-листа и разметки)")
+        self.validate_text("\n".join(visible_parts(node)))
+
+    def validate_text(self, text: str) -> None:
+        ratio = self.ratio(text)
+        if ratio < self.minimum_ratio:
+            raise ValueError(f"Суммарная доля {self.target_culture} составляет {ratio:.0%}, "
+                             f"требуется не менее {self.minimum_ratio:.0%} (без pass-листа и разметки)")
