@@ -84,10 +84,16 @@ def _chunks(messages, chunk_size, budget=None, prompt=""):
 
 
 def _strip_fence(response):
-    text = response.strip()
+    # ponytail: убираем только вводные блоки рассуждений, не теги внутри FTL-значений.
+    def strip_thoughts(text):
+        while match := re.match(r"(?is)\A<think(?:\s[^>]*)?>.*?</think\s*>\s*", text):
+            text = text[match.end():]
+        return text
+
+    text = strip_thoughts(response.strip())
     if text.startswith("```") and text.endswith("```"):
-        return "\n".join(text.splitlines()[1:-1]).strip()
-    return text
+        text = "\n".join(text.splitlines()[1:-1]).strip()
+    return strip_thoughts(text)
 
 
 def _validate_translated_message(source, translated, checker=None, pass_list=None):
@@ -156,7 +162,11 @@ async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, 
             messages.append({"role": "user", "content": feedback})
         if budget.max_input_tokens and sum(budget.tokens(item["content"]) for item in messages) + budget.reserve > budget.max_input_tokens:
             raise ResponseTruncatedError("Источник, подсказка и обратная связь не помещаются в контекст")
-        response = await client.chat(messages, retry=index > 1) if getattr(client, "_supports_retry", False) else await client.chat(messages)
+        if getattr(client, "_supports_retry", False):
+            response = await client.chat(messages, retry=index > 1)
+        else:
+            response = await client.chat(messages)
+        response = _strip_fence(response)
         if budget.tokens(response) > budget.max_tokens:
             raise ResponseTruncatedError("Ответ превышает указанное окно; блок будет уменьшен")
         try:

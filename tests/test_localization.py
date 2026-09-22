@@ -273,6 +273,18 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
         super().setUp()
         self.checker = LanguageChecker("en-US", "ru-RU", load_pass_list())
 
+    async def test_think_preamble_is_removed_before_budget_and_file_write(self):
+        class ThinkingClient:
+            async def chat(self, messages):
+                return "<think>" + "рассуждение " * 1000 + "</think>a = Привет\n    .desc = Описание"
+
+        path = self.target / "a.ftl"
+        self.write(path, "a = Hello\n    .desc = Description\n")
+        count, changed = await translate_file(path, ThinkingClient(), "Prompt", 4000,
+                                              target_culture="ru-RU", checker=self.checker)
+        self.assertEqual((count, changed), (1, True))
+        self.assertEqual(path.read_text(encoding="utf-8"), "a = Привет\n    .desc = Описание\n")
+
     async def test_raw_request_and_retry_feedback(self):
         client = FakeClient(invalid_first=True)
         result = await _translate_chunk(client, "Prompt", list(message_map("a = Hello").values()),
