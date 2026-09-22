@@ -134,7 +134,7 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
     if on_event:
         on_event("finished", target_root, len(pairs) + 1, len(pairs) + 1)
     return PrepareTargetFilesResult(
-        tuple(sorted(sources)), len(changed),
+        tuple(sorted(path for path in sources if plans[path].strip())), len(changed),
         dry_run_missing_files=sum(not path.exists() for path in sources) if dry_run else 0,
         added_messages=added, moved_messages=moved,
         planned_texts=plans, changed_paths=tuple(sorted(changed)),
