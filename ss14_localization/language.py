@@ -92,14 +92,16 @@ class LanguageChecker:
     source_culture: str
     target_culture: str
     pass_list: PassList
-    minimum_ratio: float = 0.8
+    minimum_ratio: float | None = None
     profile: Path | None = None
 
     def __post_init__(self):
-        if not 0 < self.minimum_ratio <= 1:
-            raise ValueError("Порог доли целевого языка должен быть в пределах (0, 1]")
         self.source_code = language_code(os.environ.get("TRANSLATE_DETECT_SOURCE", self.source_culture))
         self.target_code = language_code(os.environ.get("TRANSLATE_DETECT_TARGET", self.target_culture))
+        if self.minimum_ratio is None:
+            self.minimum_ratio = 0.5 if language_code(self.target_culture) == "ru" else 0.8
+        if not 0 < self.minimum_ratio <= 1:
+            raise ValueError("Порог доли целевого языка должен быть в пределах (0, 1]")
         if self.source_code == self.target_code:
             raise ValueError("Исходный и целевой языки совпадают")
         self.profile_pattern = None
