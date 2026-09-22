@@ -343,11 +343,13 @@ async def translate_file(path, client, prompt, chunk_size, source_text=None, tar
 
 async def translate_files(files, prompt, chunk_size, source_texts=None, target_culture=None, concurrency=2,
                           *, allow_partial=False, dry_run=False, checker=None, budget=None, texts=None,
-                          on_event=None, on_usage=None, on_retry=None, ai_config=None, save_tokens=False):
+                          on_event=None, on_usage=None, on_retry=None, ai_config=None, save_tokens=False,
+                          plans=None):
     checker = checker or LanguageChecker("en-US", target_culture, load_pass_list())
     budget = budget or OutputBudget.from_env()
     pending, failures = [], []
     texts = texts or {}
+    plans = plans or {}
     for path in dict.fromkeys(files):
         if path.name in checker.pass_list.ignored_files:
             if on_event:
@@ -357,8 +359,11 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
             continue
         text = ""
         try:
-            text = texts[path] if path in texts else read_text(path)
-            messages, context = _split_messages(text, (source_texts or {}).get(path), target_culture, checker)
+            if path in plans:
+                text, messages, context = plans[path]
+            else:
+                text = texts[path] if path in texts else read_text(path)
+                messages, context = _split_messages(text, (source_texts or {}).get(path), target_culture, checker)
             if not messages:
                 if on_event:
                     on_event("skipped", path, {})

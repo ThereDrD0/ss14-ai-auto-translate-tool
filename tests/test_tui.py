@@ -13,10 +13,24 @@ from unittest.mock import patch
 from textual.widgets import Checkbox, OptionList, RichLog
 from textual.color import Color
 
-from ss14_localization.tui import _cache_path, _inventory, _load_cache, create_app, summary_counts
+from ss14_localization.tui import TokenEta, _cache_path, _inventory, _load_cache, create_app, summary_counts
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
+    def test_eta_uses_finished_file_time_and_remaining_token_sizes(self):
+        small, large, larger = (Path(name) for name in ("small.ftl", "large.ftl", "larger.ftl"))
+        eta = TokenEta({small: 10, large: 100, larger: 100}, concurrency=2)
+        self.assertIsNone(eta.remaining(0))
+        eta.start(small, 0)
+        eta.start(large, 0)
+        eta.finish(small, 4)
+        eta.start(larger, 4)
+        self.assertAlmostEqual(eta.remaining(6), 36)
+        self.assertGreater(eta.remaining(100), 0)
+        eta.finish(large, 8)
+        eta.finish(larger, 9)
+        self.assertEqual(eta.remaining(9), 0)
+
     def test_no_arguments_open_tui(self):
         from ss14_localization.cli import main
         with patch("ss14_localization.tui.run", return_value=0) as launch:
@@ -141,11 +155,16 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 source.mkdir(parents=True)
                 (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
                 (source / "b.ftl").write_text("b = Hello\n", encoding="utf-8")
+                (source / "c.ftl").write_text("c = Hello\n", encoding="utf-8")
                 (source / "empty.ftl").write_text("", encoding="utf-8")
                 other = source.parent / "nl-NL"
                 other.mkdir()
                 (other / "other.ftl").write_text("other = Hallo\n", encoding="utf-8")
                 app = create_app(repo)
+                target = source.parent / "ru-RU"
+                target.mkdir()
+                (target / "c.ftl").write_text("c = Привет\n", encoding="utf-8")
+                app.error_log_path = repo / "translation-errors.log"
                 async with app.run_test() as pilot:
                     await pilot.press("down")
                     self.assertEqual(app.source, "nl-NL")
@@ -164,6 +183,8 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                             break
                     self.assertEqual(app.phase, "summary")
                     self.assertEqual(app.success, 1)
+                    self.assertEqual(app.skipped, 1)
+                    self.assertEqual(app.total, 2)
                     self.assertEqual(len(app.failures), 1)
                     self.assertEqual(app.failures[0].path.name, "b.ftl")
                     self.assertEqual(app.prompt_tokens + app.completion_tokens, 72)
@@ -199,11 +220,13 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                             if again.phase in {"summary", "failed"}:
                                 break
                         self.assertEqual(again.phase, "summary")
-                        self.assertEqual(again.skipped, 1)
+                        self.assertEqual(again.skipped, 2)
+                        self.assertEqual(again.total, 1)
                         self.assertEqual(len(again.failures), 1)
                         self.assertEqual(len(requests), 6)
                 (source.parent / "ru-RU" / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
                 edited = create_app(repo)
+                edited.error_log_path = repo / "translation-errors.log"
                 async with edited.run_test() as pilot:
                     await pilot.press("enter")
                     for _ in range(50):
@@ -217,7 +240,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                             break
                     self.assertEqual(edited.phase, "summary")
                     self.assertEqual(edited.success, 1)
-                    self.assertEqual(edited.skipped, 0)
+                    self.assertEqual(edited.skipped, 1)
                     self.assertEqual(len(requests), 10)
         finally:
             server.shutdown()

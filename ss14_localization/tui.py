@@ -15,7 +15,7 @@ import os
 from .ai import AiConfig, AiEndpoint
 from .constants import DEFAULT_LOCALE_ROOT, DEFAULT_SOURCE_CULTURE, DEFAULT_TARGET_CULTURE
 from .dependencies import import_or_install
-from .filesystem import iter_files, write_text_if_changed
+from .filesystem import iter_files, read_text, write_text_if_changed
 from .paths import TOOL_ROOT, find_repo_root
 
 
@@ -118,6 +118,37 @@ def summary_counts(success: int, failures: list, skipped: int, prompt_tokens: in
             if prompt_tokens + completion_tokens else 0.0}
 
 
+class TokenEta:
+    def __init__(self, weights: dict[Path, int], concurrency: int):
+        self.weights = weights.copy()
+        self.concurrency = max(1, concurrency)
+        self.started = {}
+        self.sample_tokens = 0
+        self.sample_seconds = 0.0
+
+    def start(self, path: Path, now: float) -> None:
+        self.started[path] = now
+
+    def finish(self, path: Path, now: float) -> None:
+        weight = self.weights.pop(path, 0)
+        started = self.started.pop(path, None)
+        if weight and started is not None:
+            self.sample_tokens += weight
+            self.sample_seconds += max(0, now - started)
+
+    def remaining(self, now: float) -> float | None:
+        if not self.weights:
+            return 0.0
+        if not self.sample_tokens:
+            return None
+        seconds_per_token = self.sample_seconds / self.sample_tokens
+        work = sum(self.weights.values()) * seconds_per_token
+        # ponytail: без прогресса внутри файла вычитаем не больше 80%; поток токенов даст точный остаток.
+        work -= sum(min(now - started, self.weights[path] * seconds_per_token * 0.8)
+                    for path, started in self.started.items() if path in self.weights)
+        return max(0.0, work / min(self.concurrency, len(self.weights)))
+
+
 def create_app(repo: Path):
     import_or_install("textual", "textual>=7.5,<8")
     from rich.table import Table
@@ -129,7 +160,7 @@ def create_app(repo: Path):
 
     from .cli import _translation_settings
     from .strings import prepare_target_files
-    from .translate import run_translate_files
+    from .translate import _split_messages, run_translate_files
 
     sources, targets = available_locales(repo / DEFAULT_LOCALE_ROOT)
     if not sources:
@@ -191,6 +222,8 @@ def create_app(repo: Path):
             self.active = set()
             self.done = self.total = 0
             self.stage_started = monotonic()
+            self.token_eta = None
+            self.error_log_path = TOOL_ROOT / "translation-errors.log"
             self.success = self.skipped = 0
             self.failures = []
             self.prompt_tokens = self.completion_tokens = self.retry_tokens = 0
@@ -338,15 +371,17 @@ def create_app(repo: Path):
             self.query_one("#log", RichLog).focus()
             self._work_hint()
             self._new_stage("Подготовка", 1)
+            self._log("ЖУРНАЛ", detail=f"Ошибки и повторы: {self.error_log_path}")
             config = replace(self.config, endpoints=tuple(replace(endpoint, model=model)
                                                            for endpoint in self.models[model]))
             Thread(target=self._translate_worker, args=(config, save_tokens), daemon=True).start()
 
-        def _new_stage(self, name: str, total: int) -> None:
+        def _new_stage(self, name: str, total: int, weights=None, concurrency=1) -> None:
             self.done = 0
             self.total = max(total, 1)
             self.active.clear()
             self.stage_started = monotonic()
+            self.token_eta = TokenEta(weights, concurrency) if weights is not None else None
             self.query_one("#stage", Static).update(name)
             self.query_one("#bar", ProgressBar).update(total=self.total, progress=0)
             self._tick()
@@ -355,10 +390,11 @@ def create_app(repo: Path):
             if self.phase != "work" or not list(self.query("#eta")):
                 return
             elapsed = monotonic() - self.stage_started
-            remaining = elapsed / self.done * (self.total - self.done) if self.done else None
-            eta = f"{remaining:.0f} с" if remaining is not None else "ожидание первого файла"
+            remaining = self.token_eta.remaining(monotonic()) if self.token_eta else None
+            eta = f"~{remaining:.0f} с" if remaining is not None else (
+                "после первого файла" if self.token_eta else "—")
             self.query_one("#eta", Static).update(
-                f"Готово: {self.done}/{self.total}  ·  Прошло: {elapsed:.0f} с  ·  Осталось: ~{eta}")
+                f"Готово: {self.done}/{self.total}  ·  Прошло: {elapsed:.0f} с  ·  Осталось: {eta}")
             names = [str(path.relative_to(repo)) if repo in path.parents else path.name
                      for path in sorted(self.active)]
             shown = ", ".join(names[:5]) or "—"
@@ -398,9 +434,13 @@ def create_app(repo: Path):
         def _translation_event(self, kind, path, payload):
             if kind == "started":
                 self.active.add(path)
+                if self.token_eta:
+                    self.token_eta.start(path, monotonic())
                 self._log("НАЧАТО", path)
             else:
                 self.active.discard(path)
+                if self.token_eta:
+                    self.token_eta.finish(path, monotonic())
                 self.done += 1
                 self.query_one("#bar", ProgressBar).update(progress=self.done)
                 if kind == "skipped":
@@ -428,11 +468,15 @@ def create_app(repo: Path):
             wait = f"; ожидание сервера: {cooldown:g} с" if cooldown else ""
             self._log("ПОВТОР", path, f"{reason}: попытка {attempt + 1}/{maximum or '∞'}{wait}; причина: {error}")
 
-        def _cached_skipped(self, count: int) -> None:
+        def _prepared_skipped(self, count: int) -> None:
             self.skipped += count
-            self.done += count
-            self.query_one("#bar", ProgressBar).update(progress=self.done)
-            self._log("ПРОПУСК", detail=f"Уже проверено ранее: {count} файлов")
+            if count:
+                self._log("ПРОПУСК", detail=f"После подготовки перевод не нужен: {count} файлов")
+            self._tick()
+
+        def _plan_progress(self, done: int) -> None:
+            self.done = done
+            self.query_one("#bar", ProgressBar).update(progress=done)
             self._tick()
 
         def _translate_worker(self, config, save_tokens=False):
@@ -490,14 +534,36 @@ def create_app(repo: Path):
                 cache = {"version": 3, "source": source_digest, "checker": checker_key,
                          "prepared": inventory if prep_safe else None, "verified": verified}
                 _save_cache(cache_path, cache)
-                self.call_from_thread(self._new_stage, "Перевод", len(files))
-                cached = [path for path in files
-                          if path.relative_to(target_root).as_posix() in verified]
-                if cached:
-                    self.call_from_thread(self._cached_skipped, len(cached))
-                cached_set = set(cached)
-                candidates = [path for path in files if path not in cached_set]
+                self.call_from_thread(self._new_stage, "Проверка перевода", len(files))
+                candidates, plans, weights = [], {}, {}
                 checked = {}
+                skipped = 0
+                for number, path in enumerate(files, 1):
+                    name = path.relative_to(target_root).as_posix()
+                    if name in verified:
+                        skipped += 1
+                    elif path.name in checker.pass_list.ignored_files:
+                        checked[name] = _file_hash(path)
+                        skipped += 1
+                    else:
+                        text = ""
+                        try:
+                            text = read_text(path)
+                            messages, context = _split_messages(text, None, self.target, checker)
+                            if messages:
+                                plans[path] = (text, messages, context)
+                                candidates.append(path)
+                                weights[path] = max(1, budget.tokens("\n\n".join(item.text for item in messages)))
+                            else:
+                                checked[name] = _file_hash(path)
+                                skipped += 1
+                        except Exception:
+                            candidates.append(path)  # Ошибка чтения или разбора будет показана при переводе.
+                            weights[path] = max(1, budget.tokens(text))
+                    if number % 25 == 0 or number == len(files):
+                        self.call_from_thread(self._plan_progress, number)
+                self.call_from_thread(self._prepared_skipped, skipped)
+                self.call_from_thread(self._new_stage, "Перевод", len(candidates), weights, args.concurrency)
 
                 def on_translation_event(kind, path, payload):
                     if kind in {"completed", "skipped"} and path.is_file():
@@ -508,7 +574,7 @@ def create_app(repo: Path):
                 result = run_translate_files(
                     candidates, prompt, args.chunk_size, target_culture=self.target,
                     concurrency=args.concurrency, checker=checker, budget=budget, ai_config=config,
-                    save_tokens=save_tokens,
+                    save_tokens=save_tokens, plans=plans,
                     on_event=on_translation_event,
                     on_retry=lambda *items: self.call_from_thread(self._retry_event, *items),
                     on_usage=lambda *items: self.call_from_thread(self._usage, *items))
