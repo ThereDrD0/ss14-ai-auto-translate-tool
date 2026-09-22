@@ -119,8 +119,10 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 requests.append(body)
                 source = body["messages"][1]["content"]
-                repeated = len(body["messages"]) > 2
-                content = ("a = Привет" if repeated else "a = {") if "a =" in source else "b = {"
+                import re
+                ids = re.findall(r"^(translation-batch-\d+-[ab])\s*=", source, re.MULTILINE)
+                content = "\n".join(f"{key} = Привет" for key in ids) if ids and all(
+                    key.endswith("-a") for key in ids) else "broken = {"
                 self.reply({"choices": [{"message": {"content": content}, "finish_reason": "stop"}],
                             "usage": {"prompt_tokens": 13, "completion_tokens": 5}})
 
@@ -187,7 +189,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(app.total, 2)
                     self.assertEqual(len(app.failures), 1)
                     self.assertEqual(app.failures[0].path.name, "b.ftl")
-                    self.assertEqual(app.prompt_tokens + app.completion_tokens, 72)
+                    self.assertEqual(app.prompt_tokens + app.completion_tokens, 90)
                     self.assertEqual(app.retry_tokens, 36)
                     self.assertIn("ПОВТОР", "\n".join(line.text for line in app.query_one("#log", RichLog).lines))
                     self.assertEqual(summary_counts(app.success, app.failures, app.skipped,
@@ -231,7 +233,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(again.skipped, 2)
                         self.assertEqual(again.total, 1)
                         self.assertEqual(len(again.failures), 1)
-                        self.assertEqual(len(requests), 6)
+                        self.assertEqual(len(requests), 7)
                 (source.parent / "ru-RU" / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
                 edited = create_app(repo)
                 edited.error_log_path = repo / "translation-errors.log"
@@ -249,7 +251,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(edited.phase, "summary")
                     self.assertEqual(edited.success, 1)
                     self.assertEqual(edited.skipped, 1)
-                    self.assertEqual(len(requests), 10)
+                    self.assertEqual(len(requests), 12)
         finally:
             server.shutdown()
             server.server_close()

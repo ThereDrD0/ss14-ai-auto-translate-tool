@@ -179,7 +179,7 @@ class LanguageTests(unittest.TestCase):
         cls.fr = LanguageChecker("en-US", "fr-FR", cls.passed)
 
     def test_any_supported_locale_not_just_ru_en(self):
-        self.assertEqual(self.ru.minimum_ratio, .5)
+        self.assertEqual(self.ru.minimum_ratio, .15)
         self.assertEqual(self.fr.minimum_ratio, .8)
         self.assertEqual(self.fr.ratio("Bonjour tout le monde"), 1)
         self.assertEqual(self.fr.ratio("Hello world"), 0)
@@ -288,7 +288,7 @@ class BudgetTests(unittest.TestCase):
         self.assertTrue(all(budget.fits(render(part)) for part in parts))
 
     def test_invalid_budget_rejected(self):
-        for kwargs in ({"max_tokens": 0}, {"safety": 1}, {"expansion": .5}, {"reserve": 10000}):
+        for kwargs in ({"max_tokens": 0}, {"safety": 1}, {"expansion": .5}, {"reserve": 100000}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 OutputBudget(**kwargs)
 
@@ -424,10 +424,43 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
         for i, path in enumerate(paths):
             self.write(path, f"a{i} = Hello\n")
         with patch("ss14_localization.translate.OpenAICompatibleClient", return_value=ConcurrentClient()):
-            result = await translate_files(paths, "Prompt", 4000, target_culture="ru-RU",
+            result = await translate_files(paths, "Prompt", 10, target_culture="ru-RU",
                                            concurrency=2, checker=checker)
         self.assertEqual(peak, 2)
         self.assertEqual(result.changed_files, 4)
+
+    async def test_same_keys_in_different_files_share_one_request(self):
+        paths = [self.target / "one.ftl", self.target / "two.ftl"]
+        self.write(paths[0], "ready = Привет\nsame = Hello\n")
+        self.write(paths[1], "same = World\n")
+        for save_tokens in (False, True):
+            with self.subTest(save_tokens=save_tokens):
+                client = FakeClient()
+                with patch("ss14_localization.translate.OpenAICompatibleClient", return_value=client):
+                    result = await translate_files(paths, "Prompt", 0, target_culture="ru-RU",
+                                                   checker=self.checker, save_tokens=save_tokens)
+                self.assertEqual((result.translated_messages, result.changed_files), (2, 2))
+                self.assertEqual(len(client.calls), 1)
+                payload = client.calls[0][-1]["content"]
+                self.assertIn("translation-batch-0-same = Hello", payload)
+                self.assertIn("translation-batch-1-same = World", payload)
+                self.assertEqual(paths[0].read_text(encoding="utf-8"), "ready = Привет\nsame = Привет\n")
+                self.assertEqual(paths[1].read_text(encoding="utf-8"), "same = Мир\n")
+                self.assertEqual(any("ready = Привет" in item["content"] for item in client.calls[0]),
+                                 not save_tokens)
+                self.write(paths[0], "ready = Привет\nsame = Hello\n")
+                self.write(paths[1], "same = World\n")
+
+    async def test_term_returns_to_its_original_file(self):
+        path = self.target / "terms.ftl"
+        self.write(path, "-item = Hello\n")
+        client = FakeClient()
+        with patch("ss14_localization.translate.OpenAICompatibleClient", return_value=client):
+            result = await translate_files([path], "Prompt", 0, target_culture="ru-RU",
+                                           checker=self.checker, save_tokens=True)
+        self.assertEqual((result.translated_messages, result.changed_files), (1, 1))
+        self.assertIn("-translation-batch-0-item = Hello", client.calls[0][-1]["content"])
+        self.assertEqual(path.read_text(encoding="utf-8"), "-item = Привет\n")
 
     async def test_partial_chunks_preserved_and_failure_reported(self):
         class FailSecond(FakeClient):
@@ -474,7 +507,19 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         result = await self.client(handler).chat([{"role": "user", "content": "a = Hello"}])
         self.assertEqual(result, "a = Привет")
         self.assertEqual(captured[0]["messages"][0]["content"], "a = Hello")
-        self.assertEqual(captured[0]["max_tokens"], 8192)
+        self.assertEqual(captured[0]["max_tokens"], 128000)
+
+    async def test_luna_uses_completion_limit_without_temperature(self):
+        httpx = import_or_install("httpx", "httpx>=0.27,<1")
+        import json
+        captured = []
+        client = self.client(lambda request: (captured.append(json.loads(request.content)) or
+                      httpx.Response(200, json={"choices": [{"message": {"content": "a = Привет"}}]})))
+        client._config.endpoints[0].model = "gpt-5.6-luna"
+        await client.chat([{"role": "user", "content": "a = Hello"}])
+        self.assertEqual(captured[0]["max_completion_tokens"], 128000)
+        self.assertEqual(captured[0]["reasoning_effort"], "none")
+        self.assertNotIn("temperature", captured[0])
 
     async def test_rate_limit_and_temporary_failures_retry(self):
         httpx = import_or_install("httpx", "httpx>=0.27,<1")

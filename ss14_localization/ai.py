@@ -12,7 +12,7 @@ from .dependencies import import_or_install
 
 
 DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:8000/v1"
-DEFAULT_LOCAL_MODEL = "gpt-5.3-codex-spark"
+DEFAULT_LOCAL_MODEL = "gpt-5.6-luna"
 DEFAULT_LOCAL_API_KEY = "local"
 
 
@@ -38,7 +38,7 @@ class AiConfig:
     timeout_seconds: int = 300
     cooldown_seconds: int = 60
     max_attempts: int = 0
-    max_output_tokens: int = 8192
+    max_output_tokens: int = 128000
 
     @classmethod
     def from_env(cls) -> "AiConfig":
@@ -76,7 +76,7 @@ class AiConfig:
             timeout_seconds=int(os.environ.get("TRANSLATE_AI_TIMEOUT_SECONDS", "300")),
             cooldown_seconds=int(os.environ.get("TRANSLATE_AI_COOLDOWN_SECONDS", "60")),
             max_attempts=int(os.environ.get("TRANSLATE_AI_MAX_ATTEMPTS", "0")),
-            max_output_tokens=int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "8192")),
+            max_output_tokens=int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "128000")),
         )
         if config.timeout_seconds <= 0 or config.cooldown_seconds < 0 or config.max_attempts < 0 or config.max_output_tokens < 64:
             raise ValueError("Некорректные таймаут, ожидание, число попыток или окно ответа")
@@ -151,13 +151,14 @@ class OpenAICompatibleClient:
             "Authorization": f"Bearer {endpoint.api_key}",
             "Content-Type": "application/json",
         }
-        payload: dict[str, Any] = {
-            "model": endpoint.model,
-            "messages": messages,
-            "temperature": temperature,
-        }
+        payload: dict[str, Any] = {"model": endpoint.model, "messages": messages}
+        if endpoint.model == "gpt-5.6-luna":
+            payload["reasoning_effort"] = "none"
+        else:
+            payload["temperature"] = temperature
         if self._config.max_output_tokens > 0:
-            field = os.environ.get("TRANSLATE_AI_TOKEN_LIMIT_FIELD", "max_tokens")
+            field = os.environ.get("TRANSLATE_AI_TOKEN_LIMIT_FIELD",
+                                   "max_completion_tokens" if endpoint.model == "gpt-5.6-luna" else "max_tokens")
             if field not in {"max_tokens", "max_completion_tokens"}:
                 raise ValueError("TRANSLATE_AI_TOKEN_LIMIT_FIELD: max_tokens или max_completion_tokens")
             payload[field] = self._config.max_output_tokens

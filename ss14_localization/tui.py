@@ -507,9 +507,9 @@ def create_app(repo: Path):
                     if os.environ.get("TRANSLATE_LANGUAGE_RATIO") else None,
                     prompt=Path(os.environ["TRANSLATE_PROMPT"]) if os.environ.get("TRANSLATE_PROMPT") else None,
                     glossary=Path(os.environ["TRANSLATE_GLOSSARY"]) if os.environ.get("TRANSLATE_GLOSSARY") else None,
-                    chunk_size=int(os.environ.get("TRANSLATE_CHUNK_SIZE", "4000")),
+                    chunk_size=int(os.environ.get("TRANSLATE_CHUNK_SIZE", "0")),
                     concurrency=int(os.environ.get("TRANSLATE_CONCURRENCY", "2")),
-                    batch_size=int(os.environ.get("TRANSLATE_BATCH_SIZE", "100")), dry_run=False)
+                    batch_size=int(os.environ.get("TRANSLATE_BATCH_SIZE", "0")), dry_run=False)
                 checker, budget, prompt = _translation_settings(args)
                 source_root = repo / DEFAULT_LOCALE_ROOT / self.source
                 target_root = repo / DEFAULT_LOCALE_ROOT / self.target

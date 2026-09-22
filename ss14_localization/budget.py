@@ -17,12 +17,12 @@ def _encoding(name):
 
 @dataclass(frozen=True)
 class OutputBudget:
-    max_tokens: int = 8192
+    max_tokens: int = 128000
     safety: float = 0.65
     expansion: float = 3.0
     reserve: int = 128
     tokenizer: str = "bytes"
-    max_input_tokens: int = 0
+    max_input_tokens: int = 922000
 
     def __post_init__(self):
         if (self.max_tokens < 64 or not 0 < self.safety < 1 or self.expansion < 1 or
@@ -33,12 +33,12 @@ class OutputBudget:
 
     @classmethod
     def from_env(cls):
-        return cls(int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "8192")),
+        return cls(int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "128000")),
                    float(os.environ.get("TRANSLATE_AI_OUTPUT_SAFETY", "0.65")),
                    float(os.environ.get("TRANSLATE_AI_OUTPUT_EXPANSION", "3")),
                    int(os.environ.get("TRANSLATE_AI_OUTPUT_RESERVE", "128")),
                    os.environ.get("TRANSLATE_AI_TOKENIZER", "bytes"),
-                   int(os.environ.get("TRANSLATE_AI_MAX_INPUT_TOKENS", "0")))
+                   int(os.environ.get("TRANSLATE_AI_MAX_INPUT_TOKENS", "922000")))
 
     @property
     def capacity(self):

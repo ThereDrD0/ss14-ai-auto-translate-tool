@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
 
     translate_all = subparsers.add_parser("translate-all")
     _translation_options(translate_all)
-    translate_all.add_argument("--batch-size", type=int, default=int(os.environ.get("TRANSLATE_BATCH_SIZE", "100")))
+    translate_all.add_argument("--batch-size", type=int, default=int(os.environ.get("TRANSLATE_BATCH_SIZE", "0")))
     translate_all.set_defaults(func=_translate_all)
 
     args = parser.parse_args(argv)
@@ -133,7 +133,7 @@ def _translation_options(parser):
     parser.add_argument("--pass-list", type=Path, default=_env_path("TRANSLATE_PASS_LIST"))
     parser.add_argument("--language-ratio", type=float, default=_env_float("TRANSLATE_LANGUAGE_RATIO"))
     parser.add_argument("--language-profile", type=Path, default=_env_path("TRANSLATE_LANGUAGE_PROFILE"))
-    parser.add_argument("--chunk-size", type=int, default=int(os.environ.get("TRANSLATE_CHUNK_SIZE", "4000")))
+    parser.add_argument("--chunk-size", type=int, default=int(os.environ.get("TRANSLATE_CHUNK_SIZE", "0")))
     parser.add_argument("--concurrency", type=int, default=int(os.environ.get("TRANSLATE_CONCURRENCY", "2")))
     parser.add_argument("--allow-partial", action="store_true")
     parser.add_argument("--save-tokens", action="store_true", help="не отправлять готовые переводы как примеры")
@@ -285,8 +285,8 @@ def _translation_settings(args):
     from .language import LanguageChecker, load_pass_list
     from .paths import TOOL_ROOT
     from .translate import build_translation_prompt
-    if args.chunk_size < 1 or args.concurrency < 1 or getattr(args, "batch_size", 1) < 1:
-        raise ValueError("Размеры блока/группы и число параллельных файлов должны быть положительными")
+    if args.chunk_size < 0 or args.concurrency < 1 or getattr(args, "batch_size", 1) < 0:
+        raise ValueError("Размеры блока/группы должны быть неотрицательными, число параллельных запросов — положительным")
     pass_path = resolve_tool_file(args.pass_list, Path("pass_list.yml")) if args.pass_list else None
     pass_list = load_pass_list(args.repo_root, pass_path)
     profile = resolve_tool_file(args.language_profile, Path("")) if args.language_profile else None
@@ -364,8 +364,9 @@ def _translate_all(args):
         print("Нет файлов для перевода.")
     translated = changed = 0
     failures = []
-    for start in range(0, len(files), args.batch_size):
-        batch = files[start:start + args.batch_size]
+    batch_size = args.batch_size or len(files) or 1
+    for start in range(0, len(files), batch_size):
+        batch = files[start:start + batch_size]
         print(f"Перевод файлов {start + 1}-{start + len(batch)} из {len(files)}...")
         result = _run_translation(args, batch, settings, prepared.planned_texts if args.dry_run else None)
         translated += result.translated_messages
