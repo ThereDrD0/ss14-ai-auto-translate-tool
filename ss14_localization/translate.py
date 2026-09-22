@@ -65,8 +65,9 @@ def build_translation_prompt(prompt_path, glossary_path=None, source_culture="en
 def _messages_to_translate(text, source_text, target_culture, checker=None):
     checker = checker or LanguageChecker("ru-RU" if target_culture.startswith("en") else "en-US",
                                          target_culture, load_pass_list())
-    nodes = entries(parse_resource(text))
-    return [message for key, message in message_map(text).items() if checker.needs_translation(nodes[key])]
+    resource = parse_resource(text)
+    nodes = entries(resource)
+    return [message for key, message in message_map(text, resource).items() if checker.needs_translation(nodes[key])]
 
 
 def _chunks(messages, chunk_size, budget=None, prompt=""):
@@ -287,11 +288,12 @@ def _replace_messages(text, replacements):
 
 
 async def translate_file(path, client, prompt, chunk_size, source_text=None, target_culture=None,
-                         *, allow_partial=False, dry_run=False, checker=None, budget=None, text=None):
+                         *, allow_partial=False, dry_run=False, checker=None, budget=None, text=None, messages=None):
     text = read_text(path) if text is None else text
     checker = checker or LanguageChecker("en-US", target_culture, load_pass_list())
     budget = budget or OutputBudget.from_env()
-    messages = _messages_to_translate(text, source_text, target_culture, checker)
+    if messages is None:
+        messages = _messages_to_translate(text, source_text, target_culture, checker)
     replacements = {}
     changed = False
     for chunk in _chunks(messages, chunk_size, budget, prompt):
@@ -328,7 +330,7 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
                 if on_event:
                     on_event("skipped", path, {})
                 continue
-            pending.append((path, text))
+            pending.append((path, text, messages))
             if dry_run:
                 chunks = _chunks(messages, chunk_size, budget, prompt)
                 estimates = []
@@ -355,7 +357,7 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
     client = OpenAICompatibleClient(ai_config or AiConfig.from_env(), on_usage, quiet=bool(on_event))
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def one(path, text):
+    async def one(path, text, messages):
         async with semaphore:
             if on_event:
                 on_event("started", path, {})
@@ -363,7 +365,8 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
                 print(f"Перевод: {path}", file=sys.stderr, flush=True)
             try:
                 result = await translate_file(path, client, prompt, chunk_size, target_culture=target_culture,
-                                              allow_partial=allow_partial, checker=checker, budget=budget, text=text)
+                                              allow_partial=allow_partial, checker=checker, budget=budget,
+                                              text=text, messages=messages)
                 if on_event:
                     on_event("completed", path, {"text": read_text(path), "messages": result[0]})
                 return result
@@ -377,7 +380,7 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
                     on_event("failed", path, {"error": str(error), "source": text, "response": None})
                 return TranslationFailure(path, 0, False, str(error))
 
-    results = await asyncio.gather(*(one(path, text) for path, text in pending))
+    results = await asyncio.gather(*(one(path, text, messages) for path, text, messages in pending))
     translated = changed = 0
     for result in results:
         if isinstance(result, TranslationFailure):

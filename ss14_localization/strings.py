@@ -47,9 +47,12 @@ def _merged_entry(source, translated):
     return result
 
 
-def _read_resource(path):
+def _read_resource(path, texts=None):
     try:
-        return parse_resource(read_text(path))
+        text = read_text(path)
+        if texts is not None:
+            texts[path] = text
+        return parse_resource(text)
     except FluentSyntaxError as error:
         raise FluentSyntaxError(f"{path}: {error}") from error
 
@@ -73,7 +76,8 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
             source_origins[key] = source_path
 
     target_paths = set(iter_files(target_root, ".ftl")) | set(pairs.values())
-    targets = {path: _read_resource(path) for path in sorted(target_paths) if path.exists()}
+    target_texts = {}
+    targets = {path: _read_resource(path, target_texts) for path in sorted(target_paths) if path.exists()}
     known = {}
     origins = {}
     for path, resource in targets.items():
@@ -110,8 +114,8 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
     # Validate the complete plan before touching any existing files.
     changed = []
     for path, text in plans.items():
-        parse_resource(text)
-        if (read_text(path) if path.exists() else "") != text:
+        if target_texts.get(path, "") != text:
+            parse_resource(text)
             changed.append(path)
             action = "создать" if not path.exists() else ("удалить" if not text.strip() else "обновить")
             if not on_event:

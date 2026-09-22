@@ -253,9 +253,10 @@ class FluentMessage:
         return "\n".join(self.lines)
 
 
-def parse_messages(text: str) -> list[FluentMessage]:
+def parse_messages(text: str, resource=None) -> list[FluentMessage]:
     text = text.replace("\r\n", "\n")
-    resource = parse_resource(text)
+    if resource is None:
+        resource = parse_resource(text)
     result = []
     for key, node in entries(resource).items():
         start = text[:node.span.start].count("\n")
@@ -264,8 +265,8 @@ def parse_messages(text: str) -> list[FluentMessage]:
     return result
 
 
-def message_map(text: str) -> dict[str, FluentMessage]:
-    return {message.id: message for message in parse_messages(text)}
+def message_map(text: str, resource=None) -> dict[str, FluentMessage]:
+    return {message.id: message for message in parse_messages(text, resource)}
 
 
 def normalize_fluent_text(text: str) -> str:
