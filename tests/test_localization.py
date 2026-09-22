@@ -231,6 +231,13 @@ class LanguageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             passed.assert_preserved("Desert Eagle", "desert eagle")
 
+    def test_pass_list_ignores_contractions_and_markup(self):
+        passed = PassList(("T", "red", "green"))
+        passed.assert_preserved("It isn't [color=red]ready[/color].",
+                                "Он [color=red]готов[/color].")
+        with self.assertRaisesRegex(ValueError, "исчезли.*T"):
+            passed.assert_preserved("T is ready", "Готово")
+
     def test_select_variant_prose_is_checked(self):
         node = entries(parse_resource("a = { $n ->\n [one] Hello\n *[other] World\n}"))["a"]
         self.assertTrue(self.ru.needs_translation(node))
@@ -266,6 +273,11 @@ class LanguageTests(unittest.TestCase):
     def test_mixed_scripts_ratio_is_independent_of_threshold(self):
         self.assertGreaterEqual(self.ru.ratio("Это русское описание игрового предмета на космической станции Hello"), .8)
         self.assertLess(self.ru.ratio("Привет Hello world this is an English description"), .8)
+
+    def test_short_russian_text_with_long_command_is_already_translated(self):
+        text = "Использование: clearnetworklinkoverlays"
+        self.assertGreaterEqual(self.ru.ratio(text), .15)
+        self.assertFalse(self.ru.needs_translation(entries(parse_resource(f"help = {text}"))["help"]))
 
 
 class BudgetTests(unittest.TestCase):
@@ -349,12 +361,15 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_raw_request_and_retry_feedback(self):
         client = FakeClient(invalid_first=True)
+        retries = []
+        client._on_retry = lambda *items: retries.append(items)
         result = await _translate_chunk(client, "Prompt", list(message_map("a = Hello").values()),
                                         "ru-RU", self.checker)
         self.assertIn("Привет", result["a"])
         self.assertEqual(client.calls[0][1]["content"], "a = Hello")
         self.assertEqual(len(client.calls[1]), 3)
         self.assertIn("Предыдущая попытка", client.calls[1][-1]["content"])
+        self.assertEqual(retries[0][-2:], ("a = Hello", "a = Привет {"))
 
     async def test_truncation_reduces_chunk(self):
         client = FakeClient(truncated_first=True)

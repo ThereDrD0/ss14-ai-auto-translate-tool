@@ -31,17 +31,21 @@ class PassList:
         return MODEL_CODE_RE.sub(" ", text)
 
     def occurrences(self, text: str):
-        return Counter(match.group(0) for match in self.pattern.finditer(text))
+        text = RICH_TAG_RE.sub(lambda match: " " if match.group(2).lower() in RICH_TAG_NAMES else match.group(0), text)
+        return Counter(match.group(0) for match in self.pattern.finditer(TAG_RE.sub(" ", text)))
 
     def assert_preserved(self, source: str, target: str):
-        if self.occurrences(source) != self.occurrences(target):
-            raise ValueError("ИИ изменил слово или название из pass-листа")
+        original, translated = self.occurrences(source), self.occurrences(target)
+        if original != translated:
+            raise ValueError(f"ИИ изменил слово или название из pass-листа: "
+                             f"исчезли {list((original - translated).elements())}, "
+                             f"появились {list((translated - original).elements())}")
 
 
 @lru_cache(maxsize=16)
 def _pass_pattern(terms):
     alternatives = "|".join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
-    return re.compile(r"(?<!\w)(?:" + alternatives + r")(?!\w)" if alternatives else r"(?!)", re.IGNORECASE)
+    return re.compile(r"(?<![\w'’])(?:" + alternatives + r")(?![\w'’])" if alternatives else r"(?!)", re.IGNORECASE)
 
 
 def load_pass_list(repo_root: Path | None = None, path: Path | None = None) -> PassList:
@@ -121,6 +125,7 @@ class LanguageChecker:
             self.detector, self.target_language = _detector(self.source_code, self.target_code)
         codes = import_or_install("langcodes", "langcodes>=3.4,<4")
         self.target_script = codes.Language.get(self.target_culture).maximize().script
+        self.source_script = codes.Language.get(self.source_culture).maximize().script
 
     def ratio(self, text: str) -> float:
         text = self.pass_list.strip(text)
@@ -142,6 +147,9 @@ class LanguageChecker:
                    "Kore": ["Hangul", "Han"], "Hrkt": ["Hiragana", "Katakana"]}.get(self.target_script, [self.target_script])
         alphabet = regex.compile("|".join(r"\p{Script=" + script + "}" for script in scripts))
         script_letters = sum(character.isalpha() and bool(alphabet.fullmatch(character)) for character in text)
+        if self.target_code == "ru" and self.source_script != self.target_script:
+            # ponytail: латинские команды не должны обнулять долю короткого русского текста.
+            accepted = script_letters
         accepted = min(accepted, script_letters)
         return accepted / total
 

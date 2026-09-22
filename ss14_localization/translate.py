@@ -137,7 +137,10 @@ def _validate_translated_message(source, translated, checker=None, pass_list=Non
             raise TranslationValidationError(f"ИИ изменил XML-разметку для {key}")
         if re.findall(r"https?://\S+", source_text) != re.findall(r"https?://\S+", target_text):
             raise TranslationValidationError(f"ИИ изменил адрес ссылки для {key}")
-        pass_list.assert_preserved(source_text, target_text)
+        try:
+            pass_list.assert_preserved(source_text, target_text)
+        except ValueError as error:
+            raise TranslationValidationError(f"{key}: {error}") from error
     if checker:
         checker.validate_text("\n".join(visible_text))
 
@@ -201,7 +204,7 @@ async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, 
             if getattr(client, "_on_retry", None):
                 client._on_retry("validation", index, attempts, error,
                                  cooldown if attempts == 0 or index < attempts else 0,
-                                 attempts == 0 or index < attempts)
+                                 attempts == 0 or index < attempts, payload, response)
             if not getattr(client, "_quiet", False):
                 print(f"Повтор проверки {index}/{attempts or '∞'}: {error}", file=sys.stderr, flush=True)
             if attempts == 0 or index < attempts:

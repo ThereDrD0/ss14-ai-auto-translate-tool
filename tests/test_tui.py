@@ -208,6 +208,8 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("[ОШИБКА]", error_log)
                     self.assertIn("b.ftl", error_log)
                     self.assertIn("Исходный текст:", error_log)
+                    self.assertIn("Исходный блок:", error_log)
+                    self.assertIn("Ответ ИИ:\nbroken = {", error_log)
                     await pilot.press("q")
                     self.assertEqual(app.phase, "summary")
                 cache = _load_cache(_cache_path(repo, "en-US", "ru-RU"))

@@ -474,7 +474,8 @@ def create_app(repo: Path):
             if retry:
                 self.retry_tokens += prompt_tokens + completion_tokens
 
-        def _retry_event(self, path, kind, attempt, maximum, error, cooldown, will_retry):
+        def _retry_event(self, path, kind, attempt, maximum, error, cooldown, will_retry,
+                         source=None, response=None):
             if kind == "split":
                 self._log("ПОВТОР", path, f"Уменьшение блока после переполнения ответа: {error}")
                 return
@@ -482,6 +483,8 @@ def create_app(repo: Path):
             wait = f"; ожидание сервера: {cooldown:g} с" if cooldown else ""
             detail = (f"{reason}: попытка {attempt + 1}/{maximum or '∞'}{wait}; причина: {error}"
                       if will_retry else f"Попытки исчерпаны ({attempt}/{maximum or '∞'}): {error}")
+            if source is not None:
+                detail += f"\nИсходный блок:\n{source}\nОтвет ИИ:\n{response}"
             self._log("ПОВТОР" if will_retry else "ОШИБКА", path, detail)
 
         def _prepared_skipped(self, count: int) -> None:
