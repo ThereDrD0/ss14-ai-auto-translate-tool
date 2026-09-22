@@ -10,9 +10,9 @@ from threading import Thread
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import OptionList
+from textual.widgets import OptionList, RichLog
 
-from ss14_localization.tui import create_app, summary_counts
+from ss14_localization.tui import _cache_path, _inventory, _load_cache, create_app, summary_counts
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
@@ -21,6 +21,52 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         with patch("ss14_localization.tui.run", return_value=0) as launch:
             self.assertEqual(main([]), 0)
         launch.assert_called_once_with()
+
+    def test_inventory_detects_same_size_edit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "en-US"
+            target = Path(temporary) / "ru-RU"
+            source.mkdir()
+            target.mkdir()
+            (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+            file = target / "a.ftl"
+            file.write_text("a = Привет\n", encoding="utf-8")
+            before = _inventory(source, target)
+            file.write_text("a = Прощай\n", encoding="utf-8")
+            after = _inventory(source, target)
+            self.assertNotEqual(before[0], after[0])
+            self.assertNotEqual(before[3]["a.ftl"], after[3]["a.ftl"])
+
+    async def test_autoscroll_can_be_paused_while_log_grows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "Resources" / "Locale" / "en-US"
+            source.mkdir(parents=True)
+            (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+            app = create_app(repo)
+            async with app.run_test(size=(80, 25)) as pilot:
+                app.phase = "work"
+                app.query_one("#choose").display = False
+                app.query_one("#work").display = True
+                app._new_stage("Перевод", 1)
+                log = app.query_one("#log", RichLog)
+                log.focus()
+                for number in range(80):
+                    app._log("ПРОВЕРЕН", detail=f"строка {number}")
+                await pilot.pause()
+                self.assertGreater(log.scroll_y, 0)
+                await pilot.press("f2", "home")
+                self.assertFalse(log.auto_scroll)
+                self.assertEqual(log.scroll_y, 0)
+                app._log("ПРОВЕРЕН", detail="новая строка")
+                await pilot.pause()
+                self.assertEqual(log.scroll_y, 0)
+                await pilot.press("f2")
+                await pilot.pause()
+                self.assertTrue(log.auto_scroll)
+                self.assertGreater(log.scroll_y, 0)
+                await pilot.press("ctrl+q")
+                self.assertTrue(app.is_running)
 
     async def test_selection_translation_retries_and_summary(self):
         requests = []
@@ -107,6 +153,45 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(all(body["model"] == "test-model" for body in requests))
                     await pilot.press("q")
                     self.assertEqual(app.phase, "summary")
+                cache = _load_cache(_cache_path(repo, "en-US", "ru-RU"))
+                self.assertEqual(cache["prepared"], _inventory(source, source.parent / "ru-RU")[0])
+                self.assertIn("a.ftl", cache["verified"])
+                self.assertNotIn("b.ftl", cache["verified"])
+                with patch("ss14_localization.strings.prepare_target_files",
+                           side_effect=AssertionError("подготовка должна использовать кэш")):
+                    again = create_app(repo)
+                    async with again.run_test() as pilot:
+                        await pilot.press("enter")
+                        for _ in range(50):
+                            await pilot.pause(0.1)
+                            if again.model_names:
+                                break
+                        await pilot.press("down", "enter")
+                        for _ in range(100):
+                            await pilot.pause(0.1)
+                            if again.phase in {"summary", "failed"}:
+                                break
+                        self.assertEqual(again.phase, "summary")
+                        self.assertEqual(again.skipped, 1)
+                        self.assertEqual(len(again.failures), 1)
+                        self.assertEqual(len(requests), 6)
+                (source.parent / "ru-RU" / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+                edited = create_app(repo)
+                async with edited.run_test() as pilot:
+                    await pilot.press("enter")
+                    for _ in range(50):
+                        await pilot.pause(0.1)
+                        if edited.model_names:
+                            break
+                    await pilot.press("down", "enter")
+                    for _ in range(100):
+                        await pilot.pause(0.1)
+                        if edited.phase in {"summary", "failed"}:
+                            break
+                    self.assertEqual(edited.phase, "summary")
+                    self.assertEqual(edited.success, 1)
+                    self.assertEqual(edited.skipped, 0)
+                    self.assertEqual(len(requests), 10)
         finally:
             server.shutdown()
             server.server_close()

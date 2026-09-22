@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import replace
+from hashlib import blake2b
+import json
 from pathlib import Path
 from threading import Thread
 from time import monotonic
@@ -13,7 +15,58 @@ import os
 from .ai import AiConfig, AiEndpoint
 from .constants import DEFAULT_LOCALE_ROOT, DEFAULT_SOURCE_CULTURE, DEFAULT_TARGET_CULTURE
 from .dependencies import import_or_install
-from .paths import find_repo_root
+from .filesystem import iter_files, write_text_if_changed
+from .paths import TOOL_ROOT, find_repo_root
+
+
+def _file_hash(path: Path) -> str:
+    return blake2b(path.read_bytes(), digest_size=16).hexdigest()
+
+
+def _inventory(source_root: Path, target_root: Path):
+    """Снимок содержимого без зависимости от времени изменения файлов."""
+    source_files = iter_files(source_root, ".ftl")
+    target_files = iter_files(target_root, ".ftl")
+    fingerprints = {}
+    digests = []
+    for label, root, files in (("s", source_root, source_files), ("t", target_root, target_files)):
+        for path in files:
+            relative = path.relative_to(root).as_posix()
+            digest = _file_hash(path)
+            digests.append(f"{label}:{relative}:{digest}")
+            if label == "t":
+                fingerprints[relative] = digest
+    source_digest = blake2b("\n".join(digests[:len(source_files)]).encode(), digest_size=16).hexdigest()
+    all_digest = blake2b("\n".join(digests).encode(), digest_size=16).hexdigest()
+    return all_digest, source_digest, source_files, fingerprints
+
+
+def _cache_path(repo: Path, source: str, target: str) -> Path:
+    key = blake2b(f"{repo.resolve()}:{source}:{target}".encode(), digest_size=12).hexdigest()
+    return TOOL_ROOT / ".deps" / f"tui-{key}.json"
+
+
+def _load_cache(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if data.get("version") == 1 else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _save_cache(path: Path, data: dict) -> None:
+    try:
+        write_text_if_changed(path, json.dumps(data, ensure_ascii=False))
+    except OSError:
+        pass  # ponytail: кэш ускоряет повторный запуск, но не должен останавливать перевод.
+
+
+def _checker_key(checker) -> str:
+    profile = checker.profile.read_bytes() if checker.profile else b""
+    settings = repr((checker.source_culture, checker.target_culture, checker.minimum_ratio,
+                     checker.pass_list.terms, checker.pass_list.ignored_files,
+                     os.environ.get("TRANSLATE_DETECT_SOURCE"), os.environ.get("TRANSLATE_DETECT_TARGET"))).encode()
+    return blake2b(settings + profile, digest_size=16).hexdigest()
 
 
 def available_locales(root: Path) -> tuple[list[str], list[str]]:
@@ -85,6 +138,8 @@ def create_app(repo: Path):
     class TranslationApp(App):
         TITLE = "Перевод локализации SS14"
         BINDINGS = [Binding("ctrl+c", "quit", "Выход"),
+                    Binding("ctrl+q", "noop", "", show=False, priority=True),
+                    Binding("f2", "toggle_auto_scroll", "Автопрокрутка", priority=True),
                     Binding("left", "previous_column", "Левая колонка", show=False),
                     Binding("right", "next_column", "Правая колонка", show=False)]
         CSS = """
@@ -191,9 +246,26 @@ def create_app(repo: Path):
             if self.phase == "choose":
                 self.query_one("#source-list", OptionList).focus()
 
+        def action_noop(self) -> None:
+            pass
+
         def action_next_column(self) -> None:
             if self.phase == "choose":
                 self.query_one("#target-list", OptionList).focus()
+
+        def action_toggle_auto_scroll(self) -> None:
+            if self.phase not in {"work", "failed"}:
+                return
+            log = self.query_one("#log", RichLog)
+            log.auto_scroll = not log.auto_scroll
+            if log.auto_scroll:
+                log.scroll_end(animate=False)
+            self._work_hint()
+
+        def _work_hint(self) -> None:
+            state = "включена" if self.query_one("#log", RichLog).auto_scroll else "выключена"
+            self.query_one("#hint", Static).update(
+                f"↑/↓, PgUp/PgDn журнал   F2 автопрокрутка: {state}   Ctrl+C выход")
 
         def _load_models(self) -> None:
             self.query_one("#model-status", Static).update("Загрузка моделей...")
@@ -230,7 +302,8 @@ def create_app(repo: Path):
             self.phase = "work"
             self.query_one("#models").display = False
             self.query_one("#work").display = True
-            self.query_one("#hint", Static).update("↑/↓ прокрутка журнала   Ctrl+C выход")
+            self.query_one("#log", RichLog).focus()
+            self._work_hint()
             self._new_stage("Подготовка", 1)
             config = replace(self.config, endpoints=tuple(replace(endpoint, model=model)
                                                            for endpoint in self.models[model]))
@@ -246,7 +319,7 @@ def create_app(repo: Path):
             self._tick()
 
         def _tick(self) -> None:
-            if self.phase != "work":
+            if self.phase != "work" or not list(self.query("#eta")):
                 return
             elapsed = monotonic() - self.stage_started
             remaining = elapsed / self.done * (self.total - self.done) if self.done else None
@@ -314,6 +387,13 @@ def create_app(repo: Path):
             if retry:
                 self.retry_tokens += prompt_tokens + completion_tokens
 
+        def _cached_skipped(self, count: int) -> None:
+            self.skipped += count
+            self.done += count
+            self.query_one("#bar", ProgressBar).update(progress=self.done)
+            self._log("ПРОПУСК", detail=f"Уже проверено ранее: {count} файлов")
+            self._tick()
+
         def _translate_worker(self, config):
             try:
                 args = SimpleNamespace(
@@ -331,16 +411,75 @@ def create_app(repo: Path):
                 checker, budget, prompt = _translation_settings(args)
                 source_root = repo / DEFAULT_LOCALE_ROOT / self.source
                 target_root = repo / DEFAULT_LOCALE_ROOT / self.target
-                prepared = prepare_target_files(source_root, target_root, [Path(".")],
-                                                on_event=lambda *items: self.call_from_thread(self._prepare_event, *items))
-                files = list(prepared.target_files)
+                cache_path = _cache_path(repo, self.source, self.target)
+                cache = _load_cache(cache_path)
+                inventory, source_digest, source_files, target_hashes = _inventory(source_root, target_root)
+                initial_source, initial_targets = source_digest, target_hashes
+                checker_key = _checker_key(checker)
+                if cache.get("source") != source_digest or cache.get("checker") != checker_key:
+                    cache["verified"] = {}
+                verified = cache.get("verified")
+                if not isinstance(verified, dict):
+                    verified = {}
+                verified = {name: digest for name, digest in verified.items()
+                            if name in target_hashes and target_hashes[name] == digest}
+                prep_safe = True
+                if cache.get("prepared") == inventory:
+                    files = [target_root / path.relative_to(source_root) for path in source_files]
+                    self.call_from_thread(self._prepare_event, "finished", target_root, 1, 1)
+                    self.call_from_thread(self._log, "ПРОПУСК", None, "Подготовка не требуется: файлы не менялись")
+                else:
+                    prepared = prepare_target_files(
+                        source_root, target_root, [Path(".")],
+                        on_event=lambda *items: self.call_from_thread(self._prepare_event, *items))
+                    files = list(prepared.target_files)
+                    inventory, source_digest, _, target_hashes = _inventory(source_root, target_root)
+                    changed_names = {path.relative_to(target_root).as_posix()
+                                     for path in prepared.changed_paths}
+                    prep_safe = source_digest == initial_source and all(
+                        initial_targets.get(name) == target_hashes.get(name)
+                        for name in initial_targets.keys() | target_hashes.keys()
+                        if name not in changed_names)
+                    if source_digest != initial_source:
+                        verified = {}
+                    verified = {name: digest for name, digest in verified.items()
+                                if name in target_hashes and target_hashes[name] == digest}
+                cache = {"version": 1, "source": source_digest, "checker": checker_key,
+                         "prepared": inventory if prep_safe else None, "verified": verified}
+                _save_cache(cache_path, cache)
                 self.call_from_thread(self._new_stage, "Перевод", len(files))
+                cached = [path for path in files
+                          if path.relative_to(target_root).as_posix() in verified]
+                if cached:
+                    self.call_from_thread(self._cached_skipped, len(cached))
+                cached_set = set(cached)
+                candidates = [path for path in files if path not in cached_set]
+                checked = {}
+
+                def on_translation_event(kind, path, payload):
+                    if kind in {"completed", "skipped"} and path.is_file():
+                        checked[path.relative_to(target_root).as_posix()] = _file_hash(path)
+                    self.call_from_thread(self._translation_event, kind, path, payload)
+
                 # ponytail: одна группа файлов сохраняет общую статистику; ограничение параллельности задаёт semaphore.
                 result = run_translate_files(
-                    files, prompt, args.chunk_size, target_culture=self.target,
+                    candidates, prompt, args.chunk_size, target_culture=self.target,
                     concurrency=args.concurrency, checker=checker, budget=budget, ai_config=config,
-                    on_event=lambda *items: self.call_from_thread(self._translation_event, *items),
+                    on_event=on_translation_event,
                     on_usage=lambda *items: self.call_from_thread(self._usage, *items))
+                try:
+                    if candidates:
+                        final_inventory, final_source, _, final_hashes = _inventory(source_root, target_root)
+                    else:
+                        final_inventory, final_source, final_hashes = inventory, source_digest, target_hashes
+                    expected_hashes = {**target_hashes, **checked}
+                    if prep_safe and final_source == source_digest and final_hashes == expected_hashes:
+                        cache["prepared"] = final_inventory
+                    cache["verified"] = {**verified, **{name: digest for name, digest in checked.items()
+                                                        if final_hashes.get(name) == digest}}
+                    _save_cache(cache_path, cache)
+                except OSError:
+                    pass  # Не превращаем завершённый перевод в ошибку из-за кэша.
                 self.call_from_thread(self._finish, result)
             except Exception as error:
                 self.call_from_thread(self._fatal, str(error))
@@ -383,8 +522,8 @@ def create_app(repo: Path):
         def _fatal(self, error):
             self._log("ОШИБКА", detail=error)
             self.query_one("#stage", Static).update("Работа остановлена из-за ошибки")
-            self.query_one("#hint", Static).update("Ctrl+C выход")
             self.phase = "failed"
+            self._work_hint()
 
     return TranslationApp()
 
