@@ -54,14 +54,18 @@ def _read_resource(path):
         raise FluentSyntaxError(f"{path}: {error}") from error
 
 
-def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool):
+def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event=None):
     ast = syntax().ast
     sources = {}
     owners = {}
     source_origins = {}
     for source_path, target_path in sorted(pairs.items()):
+        if on_event:
+            on_event("started", source_path, len(sources), len(pairs) + 1)
         resource = _read_resource(source_path)
         sources[target_path] = resource
+        if on_event:
+            on_event("completed", source_path, len(sources), len(pairs) + 1)
         for key, node in entries(resource).items():
             if key in owners:
                 raise ValueError(f"Ключ {key} повторяется в исходной локали: {source_origins[key]} и {source_path}")
@@ -110,15 +114,21 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool):
         if (read_text(path) if path.exists() else "") != text:
             changed.append(path)
             action = "создать" if not path.exists() else ("удалить" if not text.strip() else "обновить")
-            print(f"Подготовка: {action} {path}")
+            if not on_event:
+                print(f"Подготовка: {action} {path}")
     if not dry_run:
         for path in changed:
             text = plans[path]
+            action = "создать" if not path.exists() else ("удалить" if not text.strip() else "обновить")
             if not text.strip():
                 if path.exists():
                     path.unlink()
             else:
                 write_text_if_changed(path, text)
+            if on_event:
+                on_event(action, path, len(pairs), len(pairs) + 1)
+    if on_event:
+        on_event("finished", target_root, len(pairs) + 1, len(pairs) + 1)
     return PrepareTargetFilesResult(
         tuple(sorted(sources)), len(changed),
         dry_run_missing_files=sum(not path.exists() for path in sources) if dry_run else 0,
@@ -128,7 +138,7 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool):
 
 
 def prepare_target_files(source_culture_root: Path, target_culture_root: Path,
-                         relative_roots: list[Path], dry_run: bool = False):
+                         relative_roots: list[Path], dry_run: bool = False, on_event=None):
     source_culture_root = source_culture_root.resolve()
     target_culture_root = target_culture_root.resolve()
     if not source_culture_root.is_dir():
@@ -148,7 +158,7 @@ def prepare_target_files(source_culture_root: Path, target_culture_root: Path,
         for path in paths:
             if path.suffix == ".ftl":
                 pairs[path] = target_culture_root / path.relative_to(source_culture_root)
-    return _prepare(pairs, target_culture_root, dry_run)
+    return _prepare(pairs, target_culture_root, dry_run, on_event)
 
 
 def sync_locale_strings(source_root: Path, target_root: Path, dry_run: bool = False):

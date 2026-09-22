@@ -156,14 +156,15 @@ async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, 
             messages.append({"role": "user", "content": feedback})
         if budget.max_input_tokens and sum(budget.tokens(item["content"]) for item in messages) + budget.reserve > budget.max_input_tokens:
             raise ResponseTruncatedError("Источник, подсказка и обратная связь не помещаются в контекст")
-        response = await client.chat(messages)
+        response = await client.chat(messages, retry=index > 1) if getattr(client, "_supports_retry", False) else await client.chat(messages)
         if budget.tokens(response) > budget.max_tokens:
             raise ResponseTruncatedError("Ответ превышает указанное окно; блок будет уменьшен")
         try:
             return _parse_translation_response(response, expected, target_culture, checker)
         except ValueError as error:
             last_error, last_response = error, response
-            print(f"Повтор проверки {index}/{attempts or '∞'}: {error}", file=sys.stderr, flush=True)
+            if not getattr(client, "_quiet", False):
+                print(f"Повтор проверки {index}/{attempts or '∞'}: {error}", file=sys.stderr, flush=True)
             if attempts == 0 or index < attempts:
                 await asyncio.sleep(cooldown)
     raise TranslationValidationError(str(last_error), last_response) from last_error
@@ -296,19 +297,26 @@ async def translate_file(path, client, prompt, chunk_size, source_text=None, tar
 
 
 async def translate_files(files, prompt, chunk_size, source_texts=None, target_culture=None, concurrency=2,
-                          *, allow_partial=False, dry_run=False, checker=None, budget=None, texts=None):
+                          *, allow_partial=False, dry_run=False, checker=None, budget=None, texts=None,
+                          on_event=None, on_usage=None, ai_config=None):
     checker = checker or LanguageChecker("en-US", target_culture, load_pass_list())
     budget = budget or OutputBudget.from_env()
     pending, failures = [], []
     texts = texts or {}
     for path in dict.fromkeys(files):
         if path.name in checker.pass_list.ignored_files:
-            print(f"Исключён файл: {path}")
+            if on_event:
+                on_event("skipped", path, {})
+            else:
+                print(f"Исключён файл: {path}")
             continue
+        text = ""
         try:
             text = texts[path] if path in texts else read_text(path)
             messages = _messages_to_translate(text, (source_texts or {}).get(path), target_culture, checker)
             if not messages:
+                if on_event:
+                    on_event("skipped", path, {})
                 continue
             pending.append((path, text))
             if dry_run:
@@ -330,19 +338,34 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
                       f"блоки={len(estimates)}; оценки ответа={estimates}; безопасное окно={budget.capacity}")
         except Exception as error:
             failures.append(TranslationFailure(path, 0, False, str(error)))
+            if on_event:
+                on_event("failed", path, {"error": str(error), "source": text, "response": None})
     if dry_run or not pending:
         return TranslationRunResult(0, 0, tuple(item.path for item in failures), tuple(failures))
-    client = OpenAICompatibleClient(AiConfig.from_env())
+    client = OpenAICompatibleClient(ai_config or AiConfig.from_env(), on_usage, quiet=bool(on_event))
     semaphore = asyncio.Semaphore(concurrency)
 
     async def one(path, text):
         async with semaphore:
-            print(f"Перевод: {path}", file=sys.stderr, flush=True)
+            if on_event:
+                on_event("started", path, {})
+            if not on_event:
+                print(f"Перевод: {path}", file=sys.stderr, flush=True)
             try:
-                return await translate_file(path, client, prompt, chunk_size, target_culture=target_culture,
-                                            allow_partial=allow_partial, checker=checker, budget=budget, text=text)
+                result = await translate_file(path, client, prompt, chunk_size, target_culture=target_culture,
+                                              allow_partial=allow_partial, checker=checker, budget=budget, text=text)
+                if on_event:
+                    on_event("completed", path, {"text": read_text(path), "messages": result[0]})
+                return result
             except TranslationFileError as error:
+                if on_event:
+                    on_event("failed", path, {"error": str(error.error), "source": text,
+                                              "response": getattr(error.error, "ai_response", None)})
                 return TranslationFailure(path, error.translated_messages, error.changed, str(error.error))
+            except Exception as error:
+                if on_event:
+                    on_event("failed", path, {"error": str(error), "source": text, "response": None})
+                return TranslationFailure(path, 0, False, str(error))
 
     results = await asyncio.gather(*(one(path, text) for path, text in pending))
     translated = changed = 0

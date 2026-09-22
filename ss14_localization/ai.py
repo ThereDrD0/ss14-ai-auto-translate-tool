@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import os
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .dependencies import import_or_install
@@ -84,12 +84,16 @@ class AiConfig:
 
 
 class OpenAICompatibleClient:
-    def __init__(self, config: AiConfig):
+    def __init__(self, config: AiConfig, on_usage: Callable[[int, int, bool], None] | None = None,
+                 quiet: bool = False):
         self._config = config
+        self._on_usage = on_usage
+        self._quiet = quiet
+        self._supports_retry = True
         self._endpoint_index = 0
         self._httpx = import_or_install("httpx", "httpx>=0.27,<1")
 
-    async def chat(self, messages: list[dict[str, str]], temperature: float = 0.1) -> str:
+    async def chat(self, messages: list[dict[str, str]], temperature: float = 0.1, retry: bool = False) -> str:
         attempts = 0
         last_error: Exception | None = None
 
@@ -98,7 +102,7 @@ class OpenAICompatibleClient:
             endpoint = await self._next_endpoint()
 
             try:
-                return await self._send(endpoint, messages, temperature)
+                return await self._send(endpoint, messages, temperature, retry or attempts > 1)
             except RateLimitedError as error:
                 self._handle_retry(endpoint, attempts, error)
                 last_error = error
@@ -115,16 +119,17 @@ class OpenAICompatibleClient:
         will_retry = max_attempts <= 0 or attempts < max_attempts
         max_attempts_text = "unlimited" if max_attempts <= 0 else str(max_attempts)
 
-        print(
-            "AI provider retry: "
-            f"base_url={endpoint.base_url} model={endpoint.model} "
-            f"attempt={attempts}/{max_attempts_text} "
-            f"will_retry={str(will_retry).lower()} "
-            f"cooldown_seconds={self._config.cooldown_seconds if will_retry else 0} "
-            f"reason={error}",
-            file=sys.stderr,
-            flush=True,
-        )
+        if not self._quiet:
+            print(
+                "AI provider retry: "
+                f"base_url={endpoint.base_url} model={endpoint.model} "
+                f"attempt={attempts}/{max_attempts_text} "
+                f"will_retry={str(will_retry).lower()} "
+                f"cooldown_seconds={self._config.cooldown_seconds if will_retry else 0} "
+                f"reason={error}",
+                file=sys.stderr,
+                flush=True,
+            )
 
         if will_retry:
             endpoint.cool_down(self._config.cooldown_seconds)
@@ -139,7 +144,7 @@ class OpenAICompatibleClient:
 
             await asyncio.sleep(1)
 
-    async def _send(self, endpoint: AiEndpoint, messages: list[dict[str, str]], temperature: float) -> str:
+    async def _send(self, endpoint: AiEndpoint, messages: list[dict[str, str]], temperature: float, retry: bool = False) -> str:
         headers = {
             "Authorization": f"Bearer {endpoint.api_key}",
             "Content-Type": "application/json",
@@ -178,6 +183,11 @@ class OpenAICompatibleClient:
 
         try:
             data = response.json()
+            usage = data.get("usage") or {}
+            if self._on_usage and isinstance(usage, dict):
+                prompt_tokens, completion_tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
+                if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
+                    self._on_usage(prompt_tokens, completion_tokens, retry)
             if data["choices"][0].get("finish_reason") == "length":
                 raise ResponseTruncatedError("ИИ обрезал ответ по пределу выходного окна; блок будет уменьшен")
             content = data["choices"][0]["message"]["content"]
