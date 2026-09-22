@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import asyncio
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+from pathlib import Path
+import tempfile
+from threading import Thread
+import unittest
+from unittest.mock import patch
+
+from textual.widgets import OptionList
+
+from ss14_localization.tui import create_app, summary_counts
+
+
+class TuiTests(unittest.IsolatedAsyncioTestCase):
+    def test_no_arguments_open_tui(self):
+        from ss14_localization.cli import main
+        with patch("ss14_localization.tui.run", return_value=0) as launch:
+            self.assertEqual(main([]), 0)
+        launch.assert_called_once_with()
+
+    async def test_selection_translation_retries_and_summary(self):
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.assert_path("/v1/models")
+                self.reply({"data": [{"id": "first"}, {"id": "test-model"}]})
+
+            def do_POST(self):
+                self.assert_path("/v1/chat/completions")
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                requests.append(body)
+                source = body["messages"][1]["content"]
+                repeated = len(body["messages"]) > 2
+                content = ("a = Привет" if repeated else "a = {") if "a =" in source else "b = {"
+                self.reply({"choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+                            "usage": {"prompt_tokens": 13, "completion_tokens": 5}})
+
+            def assert_path(self, expected):
+                if self.path != expected:
+                    raise AssertionError(self.path)
+
+            def reply(self, data):
+                raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def log_message(self, *_):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
+                "TRANSLATE_AI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                "TRANSLATE_AI_MODEL": "ignored",
+                "TRANSLATE_AI_RESPONSE_MAX_ATTEMPTS": "2",
+                "TRANSLATE_AI_RESPONSE_COOLDOWN_SECONDS": "0",
+                "TRANSLATE_CONCURRENCY": "2",
+            }):
+                repo = Path(temporary)
+                source = repo / "Resources" / "Locale" / "en-US"
+                source.mkdir(parents=True)
+                (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+                (source / "b.ftl").write_text("b = Hello\n", encoding="utf-8")
+                other = source.parent / "nl-NL"
+                other.mkdir()
+                (other / "other.ftl").write_text("other = Hallo\n", encoding="utf-8")
+                app = create_app(repo)
+                async with app.run_test() as pilot:
+                    await pilot.press("down")
+                    self.assertEqual(app.source, "nl-NL")
+                    self.assertNotIn("nl-NL", app.target_options)
+                    await pilot.press("up", "tab", "enter")
+                    for _ in range(50):
+                        await pilot.pause(0.1)
+                        if app.model_names:
+                            break
+                    self.assertEqual(app.model_names, ["first", "test-model"])
+                    self.assertEqual(app.query_one("#model-list", OptionList).highlighted, 0)
+                    await pilot.press("down", "enter")
+                    for _ in range(100):
+                        await pilot.pause(0.1)
+                        if app.phase in {"summary", "failed"}:
+                            break
+                    self.assertEqual(app.phase, "summary")
+                    self.assertEqual(app.success, 1)
+                    self.assertEqual(len(app.failures), 1)
+                    self.assertEqual(app.failures[0].path.name, "b.ftl")
+                    self.assertEqual(app.prompt_tokens + app.completion_tokens, 72)
+                    self.assertEqual(app.retry_tokens, 36)
+                    self.assertEqual(summary_counts(app.success, app.failures, app.skipped,
+                                                    app.prompt_tokens, app.completion_tokens,
+                                                    app.retry_tokens)["success_percent"], 50.0)
+                    self.assertEqual((source.parent / "ru-RU" / "a.ftl").read_text(encoding="utf-8"),
+                                     "a = Привет\n")
+                    self.assertEqual((source.parent / "ru-RU" / "b.ftl").read_text(encoding="utf-8"),
+                                     "b = Hello\n")
+                    self.assertTrue(all(body["model"] == "test-model" for body in requests))
+                    await pilot.press("q")
+                    self.assertEqual(app.phase, "summary")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()

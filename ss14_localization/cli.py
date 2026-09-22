@@ -23,6 +23,9 @@ from .validation import validate_locale
 
 
 def main(argv: list[str] | None = None) -> int:
+    if not (sys.argv[1:] if argv is None else argv):
+        from .tui import run
+        return run()
     parser = argparse.ArgumentParser(prog="ss14-loc")
     parser.add_argument("--env-file", type=Path, help="файл окружения вместо встроенного .env")
     parser.add_argument(
