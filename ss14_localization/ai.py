@@ -85,9 +85,10 @@ class AiConfig:
 
 class OpenAICompatibleClient:
     def __init__(self, config: AiConfig, on_usage: Callable[[int, int, bool], None] | None = None,
-                 quiet: bool = False):
+                 quiet: bool = False, on_retry: Callable | None = None):
         self._config = config
         self._on_usage = on_usage
+        self._on_retry = on_retry
         self._quiet = quiet
         self._supports_retry = True
         self._endpoint_index = 0
@@ -110,23 +111,24 @@ class OpenAICompatibleClient:
                 self._handle_retry(endpoint, attempts, error)
                 last_error = error
 
-        raise RuntimeError(
-            f"AI translation failed after {attempts} attempt(s). Last error: {last_error}"
-        ) from last_error
+        raise RuntimeError(f"Перевод ИИ не удался после {attempts} попыток. Последняя ошибка: {last_error}") from last_error
 
     def _handle_retry(self, endpoint: AiEndpoint, attempts: int, error: Exception) -> None:
         max_attempts = self._config.max_attempts
         will_retry = max_attempts <= 0 or attempts < max_attempts
-        max_attempts_text = "unlimited" if max_attempts <= 0 else str(max_attempts)
+        max_attempts_text = "∞" if max_attempts <= 0 else str(max_attempts)
+        if self._on_retry:
+            self._on_retry("request", attempts, max_attempts, error,
+                           self._config.cooldown_seconds if will_retry else 0, will_retry)
 
         if not self._quiet:
             print(
-                "AI provider retry: "
-                f"base_url={endpoint.base_url} model={endpoint.model} "
-                f"attempt={attempts}/{max_attempts_text} "
-                f"will_retry={str(will_retry).lower()} "
-                f"cooldown_seconds={self._config.cooldown_seconds if will_retry else 0} "
-                f"reason={error}",
+                "Повтор запроса ИИ: "
+                f"адрес={endpoint.base_url} модель={endpoint.model} "
+                f"попытка={attempts}/{max_attempts_text} "
+                f"повтор={'да' if will_retry else 'нет'} "
+                f"ожидание={self._config.cooldown_seconds if will_retry else 0} с "
+                f"причина={error}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -170,16 +172,16 @@ class OpenAICompatibleClient:
             ) as client:
                 response = await client.post(url, headers=headers, json=payload)
         except self._httpx.HTTPError as error:
-            raise TransientAiError(f"AI provider request failed: {error.__class__.__name__}") from None
+            raise TransientAiError(f"Сбой запроса к серверу ИИ: {error.__class__.__name__}") from None
 
         if response.status_code == 429:
-            raise RateLimitedError("AI provider returned rate limit.")
+            raise RateLimitedError("Сервер ИИ ограничил частоту запросов (429).")
 
         if response.status_code >= 500:
-            raise TransientAiError(f"AI provider returned {response.status_code}. {response.text}")
+            raise TransientAiError(f"Сервер ИИ вернул {response.status_code}. {response.text}")
 
         if response.status_code >= 400:
-            raise RuntimeError(f"AI provider returned {response.status_code}. {response.text}")
+            raise RuntimeError(f"Сервер ИИ вернул {response.status_code}. {response.text}")
 
         try:
             data = response.json()
@@ -193,11 +195,11 @@ class OpenAICompatibleClient:
             content = data["choices"][0]["message"]["content"]
         except (ValueError, KeyError, IndexError, TypeError):
             raise TransientAiError(
-                f"AI provider returned an invalid chat completion response. {response.text}"
+                f"Сервер ИИ вернул некорректный ответ. {response.text}"
             ) from None
 
         if not isinstance(content, str):
-            raise TransientAiError("AI provider returned a non-text chat completion response.")
+            raise TransientAiError("Сервер ИИ вернул ответ без текста.")
 
         return content
 

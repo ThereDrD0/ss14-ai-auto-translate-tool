@@ -49,7 +49,7 @@ def _cache_path(repo: Path, source: str, target: str) -> Path:
 def _load_cache(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if data.get("version") == 1 else {}
+        return data if data.get("version") == 2 else {}
     except (OSError, ValueError, AttributeError):
         return {}
 
@@ -125,7 +125,7 @@ def create_app(repo: Path):
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical, VerticalScroll
-    from textual.widgets import Header, OptionList, ProgressBar, RichLog, Static
+    from textual.widgets import Checkbox, Header, OptionList, ProgressBar, RichLog, Static
 
     from .cli import _translation_settings
     from .strings import prepare_target_files
@@ -140,6 +140,7 @@ def create_app(repo: Path):
         BINDINGS = [Binding("ctrl+c", "quit", "Выход"),
                     Binding("ctrl+q", "noop", "", show=False, priority=True),
                     Binding("f2", "toggle_auto_scroll", "Автопрокрутка", priority=True),
+                    Binding("f3", "toggle_save_tokens", "Экономия токенов", priority=True),
                     Binding("left", "previous_column", "Левая колонка", show=False),
                     Binding("right", "next_column", "Правая колонка", show=False)]
         CSS = """
@@ -154,6 +155,7 @@ def create_app(repo: Path):
         OptionList:focus { border: round #83b4c7; }
         OptionList > .option-list--option-highlighted { background: #355467; color: #ffffff; }
         #model-list { width: 60%; }
+        #save-tokens { height: 3; width: 70%; }
         #stage, #eta, #active { height: 1; }
         #stage { color: #a9c7d9; text-style: bold; }
         #bar { height: 3; margin: 1 0; }
@@ -194,6 +196,7 @@ def create_app(repo: Path):
                 yield Static("Выберите модель из /v1/models", classes="title")
                 yield Static("Загрузка моделей...", id="model-status")
                 yield OptionList(id="model-list")
+                yield Checkbox("Экономить токены: без примеров готового перевода", value=False, id="save-tokens")
             with Vertical(id="work"):
                 yield Static("Подготовка", id="stage")
                 yield ProgressBar(total=100, show_eta=False, id="bar")
@@ -237,7 +240,7 @@ def create_app(repo: Path):
                 self.phase = "models"
                 self.query_one("#choose").display = False
                 self.query_one("#models").display = True
-                self.query_one("#hint", Static).update("↑/↓ выбор модели   Enter подтвердить   Ctrl+C выход")
+                self._model_hint()
                 self._load_models()
             elif self.phase == "models" and event.option_index is not None and self.model_names:
                 self._start_translation(self.model_names[event.option_index])
@@ -261,6 +264,20 @@ def create_app(repo: Path):
             if log.auto_scroll:
                 log.scroll_end(animate=False)
             self._work_hint()
+
+        def action_toggle_save_tokens(self) -> None:
+            if self.phase == "models":
+                checkbox = self.query_one("#save-tokens", Checkbox)
+                checkbox.value = not checkbox.value
+
+        def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+            if self.phase == "models" and event.checkbox.id == "save-tokens":
+                self._model_hint()
+
+        def _model_hint(self) -> None:
+            state = "вкл" if self.query_one("#save-tokens", Checkbox).value else "выкл"
+            self.query_one("#hint", Static).update(
+                f"↑/↓ модель  Tab/Space настройка  F3: {state}  Enter модель  Ctrl+C выход")
 
         def _work_hint(self) -> None:
             state = "включена" if self.query_one("#log", RichLog).auto_scroll else "выключена"
@@ -299,6 +316,7 @@ def create_app(repo: Path):
                 self._load_models()
 
         def _start_translation(self, model: str) -> None:
+            save_tokens = self.query_one("#save-tokens", Checkbox).value
             self.phase = "work"
             self.query_one("#models").display = False
             self.query_one("#work").display = True
@@ -307,7 +325,7 @@ def create_app(repo: Path):
             self._new_stage("Подготовка", 1)
             config = replace(self.config, endpoints=tuple(replace(endpoint, model=model)
                                                            for endpoint in self.models[model]))
-            Thread(target=self._translate_worker, args=(config,), daemon=True).start()
+            Thread(target=self._translate_worker, args=(config, save_tokens), daemon=True).start()
 
         def _new_stage(self, name: str, total: int) -> None:
             self.done = 0
@@ -335,6 +353,7 @@ def create_app(repo: Path):
 
         def _log(self, status: str, path: Path | None = None, detail: str = "") -> None:
             colors = {"ГОТОВО": "#a8cfb1", "ПРОВЕРЕН": "#a9b9c6", "ПРОПУСК": "#a9b9c6", "ОШИБКА": "#e2a2a5",
+                      "ПОВТОР": "#d5bd94",
                       "НАЧАТО": "#aac6d5", "СОЗДАНО": "#a8cfb1", "ОБНОВЛЕНО": "#a8cfb1",
                       "УДАЛЕНО": "#cbbba5"}
             line = Text()
@@ -387,6 +406,13 @@ def create_app(repo: Path):
             if retry:
                 self.retry_tokens += prompt_tokens + completion_tokens
 
+        def _retry_event(self, path, kind, attempt, maximum, error, cooldown, will_retry):
+            if not will_retry:
+                return
+            reason = "Повтор запроса к ИИ" if kind == "request" else "Повтор после проверки ответа"
+            wait = f"; ожидание сервера: {cooldown:g} с" if cooldown else ""
+            self._log("ПОВТОР", path, f"{reason}: попытка {attempt + 1}/{maximum or '∞'}{wait}; причина: {error}")
+
         def _cached_skipped(self, count: int) -> None:
             self.skipped += count
             self.done += count
@@ -394,7 +420,7 @@ def create_app(repo: Path):
             self._log("ПРОПУСК", detail=f"Уже проверено ранее: {count} файлов")
             self._tick()
 
-        def _translate_worker(self, config):
+        def _translate_worker(self, config, save_tokens=False):
             try:
                 args = SimpleNamespace(
                     repo_root=repo, source_culture=self.source, target_culture=self.target,
@@ -402,7 +428,8 @@ def create_app(repo: Path):
                     if os.environ.get("TRANSLATE_PASS_LIST") else None,
                     language_profile=Path(os.environ["TRANSLATE_LANGUAGE_PROFILE"])
                     if os.environ.get("TRANSLATE_LANGUAGE_PROFILE") else None,
-                    language_ratio=float(os.environ.get("TRANSLATE_LANGUAGE_RATIO", "0.8")),
+                    language_ratio=float(os.environ["TRANSLATE_LANGUAGE_RATIO"])
+                    if os.environ.get("TRANSLATE_LANGUAGE_RATIO") else None,
                     prompt=Path(os.environ["TRANSLATE_PROMPT"]) if os.environ.get("TRANSLATE_PROMPT") else None,
                     glossary=Path(os.environ["TRANSLATE_GLOSSARY"]) if os.environ.get("TRANSLATE_GLOSSARY") else None,
                     chunk_size=int(os.environ.get("TRANSLATE_CHUNK_SIZE", "4000")),
@@ -425,7 +452,8 @@ def create_app(repo: Path):
                             if name in target_hashes and target_hashes[name] == digest}
                 prep_safe = True
                 if cache.get("prepared") == inventory:
-                    files = [target_root / path.relative_to(source_root) for path in source_files]
+                    files = [target_root / path.relative_to(source_root) for path in source_files
+                             if path.relative_to(source_root).as_posix() in target_hashes]
                     self.call_from_thread(self._prepare_event, "finished", target_root, 1, 1)
                     self.call_from_thread(self._log, "ПРОПУСК", None, "Подготовка не требуется: файлы не менялись")
                 else:
@@ -444,7 +472,7 @@ def create_app(repo: Path):
                         verified = {}
                     verified = {name: digest for name, digest in verified.items()
                                 if name in target_hashes and target_hashes[name] == digest}
-                cache = {"version": 1, "source": source_digest, "checker": checker_key,
+                cache = {"version": 2, "source": source_digest, "checker": checker_key,
                          "prepared": inventory if prep_safe else None, "verified": verified}
                 _save_cache(cache_path, cache)
                 self.call_from_thread(self._new_stage, "Перевод", len(files))
@@ -465,7 +493,9 @@ def create_app(repo: Path):
                 result = run_translate_files(
                     candidates, prompt, args.chunk_size, target_culture=self.target,
                     concurrency=args.concurrency, checker=checker, budget=budget, ai_config=config,
+                    save_tokens=save_tokens,
                     on_event=on_translation_event,
+                    on_retry=lambda *items: self.call_from_thread(self._retry_event, *items),
                     on_usage=lambda *items: self.call_from_thread(self._usage, *items))
                 try:
                     if candidates:

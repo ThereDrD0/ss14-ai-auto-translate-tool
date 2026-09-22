@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     validate.add_argument("--source-root", type=Path, default=_env_path("TRANSLATE_SOURCE_ROOT"))
     validate.add_argument("--target-root", type=Path, default=_env_path("TRANSLATE_TARGET_ROOT"))
     validate.add_argument("--pass-list", type=Path, default=_env_path("TRANSLATE_PASS_LIST"))
-    validate.add_argument("--language-ratio", type=float, default=float(os.environ.get("TRANSLATE_LANGUAGE_RATIO", "0.8")))
+    validate.add_argument("--language-ratio", type=float, default=_env_float("TRANSLATE_LANGUAGE_RATIO"))
     validate.add_argument("--language-profile", type=Path, default=_env_path("TRANSLATE_LANGUAGE_PROFILE"))
     validate.set_defaults(func=_validate)
 
@@ -114,6 +114,10 @@ def _env_path(name):
     return Path(os.environ[name]) if os.environ.get(name) else None
 
 
+def _env_float(name):
+    return float(os.environ[name]) if os.environ.get(name) else None
+
+
 def _translation_options(parser):
     parser.add_argument("--env-file", type=Path, default=argparse.SUPPRESS)
     parser.add_argument("--repo-root", type=Path, default=argparse.SUPPRESS)
@@ -127,11 +131,12 @@ def _translation_options(parser):
     parser.add_argument("--prompt", type=Path, default=_env_path("TRANSLATE_PROMPT"))
     parser.add_argument("--glossary", type=Path, default=_env_path("TRANSLATE_GLOSSARY"))
     parser.add_argument("--pass-list", type=Path, default=_env_path("TRANSLATE_PASS_LIST"))
-    parser.add_argument("--language-ratio", type=float, default=float(os.environ.get("TRANSLATE_LANGUAGE_RATIO", "0.8")))
+    parser.add_argument("--language-ratio", type=float, default=_env_float("TRANSLATE_LANGUAGE_RATIO"))
     parser.add_argument("--language-profile", type=Path, default=_env_path("TRANSLATE_LANGUAGE_PROFILE"))
     parser.add_argument("--chunk-size", type=int, default=int(os.environ.get("TRANSLATE_CHUNK_SIZE", "4000")))
     parser.add_argument("--concurrency", type=int, default=int(os.environ.get("TRANSLATE_CONCURRENCY", "2")))
     parser.add_argument("--allow-partial", action="store_true")
+    parser.add_argument("--save-tokens", action="store_true", help="не отправлять готовые переводы как примеры")
     parser.add_argument("--report-json", type=Path)
     parser.add_argument("--dry-run", action="store_true")
 
@@ -305,7 +310,7 @@ def _run_translation(args, files, settings, texts=None):
         files, prompt, args.chunk_size, _source_texts_for_translation(args, files),
         target_culture=args.target_culture, concurrency=args.concurrency,
         allow_partial=args.allow_partial, dry_run=args.dry_run,
-        checker=checker, budget=budget, texts=texts,
+        checker=checker, budget=budget, texts=texts, save_tokens=args.save_tokens,
     )
     print(f"translated_messages={result.translated_messages} changed_files={result.changed_files} "
           f"failed_files={len(result.failed_files)}")

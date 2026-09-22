@@ -10,7 +10,7 @@ from threading import Thread
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import OptionList, RichLog
+from textual.widgets import Checkbox, OptionList, RichLog
 
 from ss14_localization.tui import _cache_path, _inventory, _load_cache, create_app, summary_counts
 
@@ -56,6 +56,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertGreater(log.scroll_y, 0)
                 await pilot.press("f2", "home")
+                await pilot.pause(0.5)
                 self.assertFalse(log.auto_scroll)
                 self.assertEqual(log.scroll_y, 0)
                 app._log("ПРОВЕРЕН", detail="новая строка")
@@ -67,6 +68,24 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(log.scroll_y, 0)
                 await pilot.press("ctrl+q")
                 self.assertTrue(app.is_running)
+
+    async def test_model_screen_token_setting_defaults_off(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "Resources" / "Locale" / "en-US"
+            source.mkdir(parents=True)
+            (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+            app = create_app(repo)
+            async with app.run_test() as pilot:
+                app.phase = "models"
+                app.query_one("#choose").display = False
+                app.query_one("#models").display = True
+                checkbox = app.query_one("#save-tokens", Checkbox)
+                self.assertFalse(checkbox.value)
+                await pilot.press("f3")
+                self.assertTrue(checkbox.value)
+                await pilot.press("f3")
+                self.assertFalse(checkbox.value)
 
     async def test_selection_translation_retries_and_summary(self):
         requests = []
@@ -117,6 +136,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 source.mkdir(parents=True)
                 (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
                 (source / "b.ftl").write_text("b = Hello\n", encoding="utf-8")
+                (source / "empty.ftl").write_text("", encoding="utf-8")
                 other = source.parent / "nl-NL"
                 other.mkdir()
                 (other / "other.ftl").write_text("other = Hallo\n", encoding="utf-8")
@@ -143,6 +163,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(app.failures[0].path.name, "b.ftl")
                     self.assertEqual(app.prompt_tokens + app.completion_tokens, 72)
                     self.assertEqual(app.retry_tokens, 36)
+                    self.assertIn("ПОВТОР", "\n".join(line.text for line in app.query_one("#log", RichLog).lines))
                     self.assertEqual(summary_counts(app.success, app.failures, app.skipped,
                                                     app.prompt_tokens, app.completion_tokens,
                                                     app.retry_tokens)["success_percent"], 50.0)
@@ -150,6 +171,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                                      "a = Привет\n")
                     self.assertEqual((source.parent / "ru-RU" / "b.ftl").read_text(encoding="utf-8"),
                                      "b = Hello\n")
+                    self.assertFalse((source.parent / "ru-RU" / "empty.ftl").exists())
                     self.assertTrue(all(body["model"] == "test-model" for body in requests))
                     await pilot.press("q")
                     self.assertEqual(app.phase, "summary")

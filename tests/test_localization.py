@@ -42,6 +42,14 @@ class Fixture(unittest.TestCase):
 
 
 class PreparationTests(Fixture):
+    def test_empty_source_file_is_not_sent_to_translation(self):
+        self.write(self.source / "empty.ftl", "")
+        self.write(self.target / "empty.ftl", "filled = Привет\n")
+        self.write(self.source / "filled.ftl", "filled = Hello\n")
+        result = self.prepare()
+        self.assertEqual(result.target_files, (self.target / "filled.ftl",))
+        self.assertFalse((self.target / "empty.ftl").exists())
+
     def test_moves_reorders_and_preserves_translation(self):
         self.write(self.source / "a.ftl", "# Source comment\na = Hello\nb = World\nc = Bye\n")
         self.write(self.target / "a.ftl", "c = Пока\na = Привет\n")
@@ -171,6 +179,8 @@ class LanguageTests(unittest.TestCase):
         cls.fr = LanguageChecker("en-US", "fr-FR", cls.passed)
 
     def test_any_supported_locale_not_just_ru_en(self):
+        self.assertEqual(self.ru.minimum_ratio, .5)
+        self.assertEqual(self.fr.minimum_ratio, .8)
         self.assertEqual(self.fr.ratio("Bonjour tout le monde"), 1)
         self.assertEqual(self.fr.ratio("Hello world"), 0)
         de = LanguageChecker("fr-FR", "de-DE", self.passed)
@@ -217,7 +227,17 @@ class LanguageTests(unittest.TestCase):
             self.assertEqual(checker.ratio("Qapla nuqneh"), 1)
             self.assertEqual(checker.ratio("Hello world"), 0)
 
-    def test_eighty_percent_threshold_with_mixed_scripts(self):
+    def test_fifty_percent_russian_threshold_and_markup_exclusions(self):
+        mixed = "Привет привет Hello world"
+        self.assertGreaterEqual(self.ru.ratio(mixed), .5)
+        self.assertLess(self.ru.ratio(mixed), .8)
+        self.assertFalse(self.ru.needs_translation(entries(parse_resource(f"english-key-name = {mixed}"))["english-key-name"]))
+        decorated = '[bold][BubbleHeader]Привет привет[/BubbleHeader][/bold] [tutkeybind="UIClick"] Hello world 123 !?'
+        self.assertEqual(self.ru.ratio(decorated), self.ru.ratio(mixed))
+        self.assertEqual(self.ru.pass_list.strip('[Name]Привет[/Name] [BubbleContent]мир[/BubbleContent]').split(),
+                         ["Привет", "мир"])
+
+    def test_mixed_scripts_ratio_is_independent_of_threshold(self):
         self.assertGreaterEqual(self.ru.ratio("Это русское описание игрового предмета на космической станции Hello"), .8)
         self.assertLess(self.ru.ratio("Привет Hello world this is an English description"), .8)
 
@@ -259,7 +279,8 @@ class FakeClient:
             raise ResponseTruncatedError("length")
         if len(self.calls) == 1 and self.invalid_first:
             return "a = Привет {"
-        resource = parse_resource(messages[1]["content"])
+        payload = messages[-2]["content"] if messages[-1]["content"].startswith("Предыдущая попытка") else messages[-1]["content"]
+        resource = parse_resource(payload)
         ast = syntax().ast
         from ss14_localization.translate import _text_slots
         for node in entries(resource).values():
@@ -272,6 +293,21 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self.checker = LanguageChecker("en-US", "ru-RU", load_pass_list())
+
+    async def test_token_saving_only_sends_untranslated_keys(self):
+        for save_tokens in (False, True):
+            with self.subTest(save_tokens=save_tokens):
+                path = self.target / "mixed.ftl"
+                self.write(path, "ready = Привет\nmissing = Hello\n")
+                client = FakeClient()
+                count, changed = await translate_file(path, client, "Prompt", 4000,
+                                                      target_culture="ru-RU", checker=self.checker,
+                                                      save_tokens=save_tokens)
+                self.assertEqual((count, changed), (1, True))
+                self.assertEqual(path.read_text(encoding="utf-8"), "ready = Привет\nmissing = Привет\n")
+                sent = [item["content"] for item in client.calls[0] if item["role"] == "user"]
+                self.assertEqual(sent[-1], "missing = Hello")
+                self.assertEqual(any("ready = Привет" in item for item in sent), not save_tokens)
 
     async def test_think_preamble_is_removed_before_budget_and_file_write(self):
         class ThinkingClient:
@@ -389,10 +425,10 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
 
 
 class ApiTests(unittest.IsolatedAsyncioTestCase):
-    def client(self, handler, attempts=3):
+    def client(self, handler, attempts=3, on_retry=None):
         httpx = import_or_install("httpx", "httpx>=0.27,<1")
         client = OpenAICompatibleClient(AiConfig((AiEndpoint("http://test/v1", "manual-model", "test-key"),),
-                                                max_attempts=attempts, cooldown_seconds=0))
+                                                max_attempts=attempts, cooldown_seconds=0), on_retry=on_retry)
         transport = httpx.MockTransport(handler)
         client._httpx = SimpleNamespace(HTTPError=httpx.HTTPError,
                                       AsyncClient=lambda **kwargs: httpx.AsyncClient(transport=transport, **kwargs))
@@ -414,13 +450,16 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_rate_limit_and_temporary_failures_retry(self):
         httpx = import_or_install("httpx", "httpx>=0.27,<1")
         calls = []
+        retries = []
         def handler(request):
             calls.append(request)
             if len(calls) < 3:
                 return httpx.Response(429 if len(calls) == 1 else 503)
             return httpx.Response(200, json={"choices": [{"message": {"content": "a = Привет"}}]})
-        self.assertEqual(await self.client(handler).chat([]), "a = Привет")
+        self.assertEqual(await self.client(handler, on_retry=lambda *items: retries.append(items)).chat([]), "a = Привет")
         self.assertEqual(len(calls), 3)
+        self.assertEqual([item[1] for item in retries], [1, 2])
+        self.assertTrue(all(item[5] for item in retries))
 
     async def test_truncated_response_is_not_saved_or_retried_at_same_size(self):
         httpx = import_or_install("httpx", "httpx>=0.27,<1")
@@ -477,11 +516,13 @@ class ConfigurationTests(Fixture):
         self.write(self.source / "a.ftl", "# Keep\na = Hello { $user }\n    .desc = Hello World\ngun = Desert Eagle\n")
         original = (self.source / "a.ftl").read_bytes()
         requests = []
+        contexts = []
         class Handler(BaseHTTPRequestHandler):
             def do_POST(inner):
                 payload = json.loads(inner.rfile.read(int(inner.headers["Content-Length"])))
-                text = payload["messages"][1]["content"]
+                text = payload["messages"][-1]["content"]
                 requests.append(text)
+                contexts.append("\n".join(item["content"] for item in payload["messages"][1:-1]))
                 translated = text.replace("Hello", "Привет").replace("World", "Мир")
                 body = json.dumps({"choices": [{"message": {"content": translated}, "finish_reason": "stop"}]}).encode()
                 inner.send_response(200)
@@ -513,6 +554,7 @@ class ConfigurationTests(Fixture):
             self.assertIn("{ $user }", target)
             self.assertGreater(len(requests), 0)
             self.assertTrue(all(not text.startswith("[") for text in requests))
+            self.assertTrue(any("gun = Desert Eagle" in context for context in contexts))
             self.assertEqual(json.loads(report.read_text(encoding="utf-8"))["failed_files"], [])
         finally:
             server.shutdown()
