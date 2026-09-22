@@ -358,10 +358,13 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_truncation_reduces_chunk(self):
         client = FakeClient(truncated_first=True)
+        retries = []
+        client._on_retry = lambda *items: retries.append(items)
         result = await _safe_chunk(client, "Prompt", list(message_map("a = Hello\nb = World").values()),
                                    self.checker, OutputBudget())
         self.assertEqual(set(result), {"a", "b"})
         self.assertEqual(len(client.calls), 3)
+        self.assertEqual(retries[0][0], "split")
 
     async def test_single_message_truncation_uses_text_fragments(self):
         client = FakeClient(truncated_first=True)

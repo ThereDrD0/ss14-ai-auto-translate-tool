@@ -199,6 +199,13 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                                      "b = Hello\n")
                     self.assertFalse((source.parent / "ru-RU" / "empty.ftl").exists())
                     self.assertTrue(all(body["model"] == "test-model" for body in requests))
+                    self.assertFalse(any("c =" in item["content"] for body in requests
+                                         for item in body["messages"]))
+                    error_log = app.error_log_path.read_text(encoding="utf-8")
+                    self.assertIn("[ПОВТОР]", error_log)
+                    self.assertIn("[ОШИБКА]", error_log)
+                    self.assertIn("b.ftl", error_log)
+                    self.assertIn("Исходный текст:", error_log)
                     await pilot.press("q")
                     self.assertEqual(app.phase, "summary")
                 cache = _load_cache(_cache_path(repo, "en-US", "ru-RU"))
@@ -208,6 +215,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 with patch("ss14_localization.strings.prepare_target_files",
                            side_effect=AssertionError("подготовка должна использовать кэш")):
                     again = create_app(repo)
+                    again.error_log_path = repo / "translation-errors.log"
                     async with again.run_test() as pilot:
                         await pilot.press("enter")
                         for _ in range(50):

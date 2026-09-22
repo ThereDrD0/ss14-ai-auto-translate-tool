@@ -266,7 +266,9 @@ async def _translate_large_message(message, client, prompt, checker, budget, dep
                 from .fluent import pattern_text
                 value = pattern_text(node.value)
                 translated_pieces.append(leading + value.strip() + trailing)
-            except ResponseTruncatedError:
+            except ResponseTruncatedError as error:
+                if getattr(client, "_on_retry", None):
+                    client._on_retry("split", 0, 0, error, 0, True)
                 translated_pieces.append(await _translate_fragment_again(piece, client, prompt, checker,
                                                                          budget.smaller(), depth + 1, context))
         value = "".join(translated_pieces)
@@ -293,7 +295,9 @@ async def _safe_chunk(client, prompt, chunk, checker, budget, context=()):
         return await _translate_large_message(chunk[0], client, prompt, checker, budget, context=context)
     try:
         return await _translate_chunk(client, prompt, chunk, checker.target_culture, checker, budget, context)
-    except ResponseTruncatedError:
+    except ResponseTruncatedError as error:
+        if getattr(client, "_on_retry", None):
+            client._on_retry("split", 0, 0, error, 0, True)
         if len(chunk) == 1:
             return await _translate_large_message(chunk[0], client, prompt, checker, budget.smaller(), context=context)
         middle = len(chunk) // 2

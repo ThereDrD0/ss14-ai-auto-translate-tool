@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import replace
+from datetime import datetime
 from hashlib import blake2b
 import json
 from pathlib import Path
@@ -83,7 +84,7 @@ def available_locales(root: Path) -> tuple[list[str], list[str]]:
     return sources, sorted(existing | supported | {DEFAULT_TARGET_CULTURE})
 
 
-def fetch_models(config: AiConfig) -> dict[str, tuple[AiEndpoint, ...]]:
+def fetch_models(config: AiConfig, on_error=None) -> dict[str, tuple[AiEndpoint, ...]]:
     """Собирает модели из /v1/models всех настроенных серверов."""
     httpx = import_or_install("httpx", "httpx>=0.27,<1")
     found: dict[str, list[AiEndpoint]] = defaultdict(list)
@@ -100,6 +101,8 @@ def fetch_models(config: AiConfig) -> dict[str, tuple[AiEndpoint, ...]]:
                             found[item["id"]].append(endpoint)
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
             errors.append(f"{endpoint.base_url}: {error}")
+            if on_error:
+                on_error(endpoint, error)
     if not found:
         raise ValueError("Не удалось получить модели из /v1/models. " + "; ".join(errors))
     return {name: tuple(endpoints) for name, endpoints in sorted(found.items())}
@@ -338,7 +341,9 @@ def create_app(repo: Path):
             def worker():
                 try:
                     config = AiConfig.from_env()
-                    models = fetch_models(config)
+                    models = fetch_models(config, on_error=lambda endpoint, error:
+                                          self.call_from_thread(self._log, "ОШИБКА", None,
+                                                                f"Получение моделей {endpoint.base_url}: {error}"))
                     self.call_from_thread(self._models_loaded, config, models, None)
                 except Exception as error:
                     self.call_from_thread(self._models_loaded, None, {}, str(error))
@@ -348,6 +353,7 @@ def create_app(repo: Path):
         def _models_loaded(self, config, models, error):
             if error:
                 self.query_one("#model-status", Static).update(f"Ошибка: {error}. Enter — повторить запрос")
+                self._log("ОШИБКА", detail=f"Загрузка моделей: {error}")
                 self.model_names = []
                 return
             self.config = config
@@ -409,11 +415,18 @@ def create_app(repo: Path):
                       "УДАЛЕНО": "#cbbba5"}
             line = Text()
             line.append(f"[{status}] ", style=colors.get(status, "#c2d0dc"))
+            name = str(path.relative_to(repo)) if path and repo in path.parents else str(path) if path else ""
             if path:
-                line.append(str(path.relative_to(repo)) if repo in path.parents else str(path))
+                line.append(name)
             if detail:
                 line.append("\n" + detail)
             self.query_one("#log", RichLog).write(line)
+            if status in {"ОШИБКА", "ПОВТОР"}:
+                try:
+                    with self.error_log_path.open("a", encoding="utf-8") as log:
+                        log.write(f"{datetime.now().isoformat(timespec='seconds')} [{status}] {name}\n{detail}\n\n")
+                except OSError as error:
+                    self.query_one("#log", RichLog).write(f"[ОШИБКА] Не удалось записать {self.error_log_path}: {error}")
 
         def _prepare_event(self, kind, path, done, total):
             if kind == "started":
@@ -462,11 +475,14 @@ def create_app(repo: Path):
                 self.retry_tokens += prompt_tokens + completion_tokens
 
         def _retry_event(self, path, kind, attempt, maximum, error, cooldown, will_retry):
-            if not will_retry:
+            if kind == "split":
+                self._log("ПОВТОР", path, f"Уменьшение блока после переполнения ответа: {error}")
                 return
             reason = "Повтор запроса к ИИ" if kind == "request" else "Повтор после проверки ответа"
             wait = f"; ожидание сервера: {cooldown:g} с" if cooldown else ""
-            self._log("ПОВТОР", path, f"{reason}: попытка {attempt + 1}/{maximum or '∞'}{wait}; причина: {error}")
+            detail = (f"{reason}: попытка {attempt + 1}/{maximum or '∞'}{wait}; причина: {error}"
+                      if will_retry else f"Попытки исчерпаны ({attempt}/{maximum or '∞'}): {error}")
+            self._log("ПОВТОР" if will_retry else "ОШИБКА", path, detail)
 
         def _prepared_skipped(self, count: int) -> None:
             self.skipped += count
@@ -611,6 +627,8 @@ def create_app(repo: Path):
             table.add_row("Из них на повторы", f"{counts['retry_tokens']} ({counts['retry_percent']:.1f}%)")
             table.add_row("Токены", "Нет данных от API" if not counts["tokens"] else
                           f"Вход: {self.prompt_tokens}; выход: {self.completion_tokens}")
+            if self.error_log_path.is_file():
+                table.add_row("Журнал ошибок", str(self.error_log_path))
             errors = Table(title="Ошибки по частоте", border_style="#506474")
             errors.add_column("Ошибка")
             errors.add_column("Раз", justify="right")
