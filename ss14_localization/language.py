@@ -125,10 +125,14 @@ class LanguageChecker:
             self.detector, self.target_language = _detector(self.source_code, self.target_code)
         codes = import_or_install("langcodes", "langcodes>=3.4,<4")
         self.target_script = codes.Language.get(self.target_culture).maximize().script
-        self.source_script = codes.Language.get(self.source_culture).maximize().script
 
     def ratio(self, text: str) -> float:
         text = self.pass_list.strip(text)
+        label, separator, command = text.partition(":")
+        if (self.target_code == "ru" and separator and label.strip().casefold() == "использование" and
+                re.fullmatch(r"\s*[A-Za-z][A-Za-z0-9_]{13,}\s*", command)):
+            # ponytail: команда — технический идентификатор, а не английский перевод.
+            text = label
         total = sum(character.isalpha() for character in text)
         if not total:
             return 1.0
@@ -147,9 +151,6 @@ class LanguageChecker:
                    "Kore": ["Hangul", "Han"], "Hrkt": ["Hiragana", "Katakana"]}.get(self.target_script, [self.target_script])
         alphabet = regex.compile("|".join(r"\p{Script=" + script + "}" for script in scripts))
         script_letters = sum(character.isalpha() and bool(alphabet.fullmatch(character)) for character in text)
-        if self.target_code == "ru" and self.source_script != self.target_script:
-            # ponytail: латинские команды не должны обнулять долю короткого русского текста.
-            accepted = script_letters
         accepted = min(accepted, script_letters)
         return accepted / total
 

@@ -260,7 +260,7 @@ class LanguageTests(unittest.TestCase):
             self.assertEqual(checker.ratio("Qapla nuqneh"), 1)
             self.assertEqual(checker.ratio("Hello world"), 0)
 
-    def test_fifty_percent_russian_threshold_and_markup_exclusions(self):
+    def test_russian_ratio_and_markup_exclusions(self):
         mixed = "Привет привет Hello world"
         self.assertGreaterEqual(self.ru.ratio(mixed), .5)
         self.assertLess(self.ru.ratio(mixed), .8)
@@ -275,9 +275,18 @@ class LanguageTests(unittest.TestCase):
         self.assertLess(self.ru.ratio("Привет Hello world this is an English description"), .8)
 
     def test_short_russian_text_with_long_command_is_already_translated(self):
-        text = "Использование: clearnetworklinkoverlays"
-        self.assertGreaterEqual(self.ru.ratio(text), .15)
-        self.assertFalse(self.ru.needs_translation(entries(parse_resource(f"help = {text}"))["help"]))
+        for text in ("Использование: clearnetworklinkoverlays",
+                     "Использование: bloodcult_addtarget <ckey>"):
+            with self.subTest(text=text):
+                self.assertGreaterEqual(self.ru.ratio(text), .15)
+                self.assertFalse(self.ru.needs_translation(entries(parse_resource(f"help = {text}"))["help"]))
+
+    def test_english_sentence_with_russian_word_still_needs_translation(self):
+        for text in ("Привет, the device is ready", "The device is ready. Привет",
+                     "Использование: press the button"):
+            with self.subTest(text=text):
+                self.assertLess(self.ru.ratio(text), .15)
+                self.assertTrue(self.ru.needs_translation(entries(parse_resource(f"help = {text}"))["help"]))
 
 
 class BudgetTests(unittest.TestCase):
