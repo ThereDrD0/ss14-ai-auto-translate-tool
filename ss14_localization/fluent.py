@@ -4,6 +4,7 @@ from collections import Counter
 from collections.abc import Callable
 from functools import lru_cache
 from dataclasses import dataclass
+import importlib
 import re
 
 from .constants import ZERO_WIDTH_SPACE
@@ -16,28 +17,144 @@ class FluentSyntaxError(ValueError):
 
 @lru_cache(maxsize=1)
 def syntax():
-    return import_or_install("fluent.syntax", "fluent.syntax>=0.19,<1")
+    return import_or_install("fluent.syntax", "fluent.syntax==0.19.0")
+
+
+@lru_cache(maxsize=1)
+def _parser_class():
+    """Adapt Mozilla's parser to the non-experimental Linguini 0.8 grammar used by SS14."""
+    module = syntax()
+    parser_module = importlib.import_module("fluent.syntax.parser")
+    stream_module = importlib.import_module("fluent.syntax.stream")
+    ast = module.ast
+
+    class LinguiniCompatibleStream(module.FluentParserStream):
+        def is_next_line_comment(self, level: int = -1) -> bool:
+            if self.current_char != stream_module.EOL:
+                return False
+
+            offset = self.index + (2 if self.get(self.index) == "\r" and self.get(self.index + 1) == "\n" else 1)
+            count = 0
+            while self.get(offset + count) == "#":
+                count += 1
+            next_level = min(count, 3) - 1
+            return next_level == level
+
+    class LinguiniCompatibleParser(module.FluentParser):
+        def parse(self, source: str):
+            ps = LinguiniCompatibleStream(source)
+            ps.skip_blank_block()
+            body = []
+            last_comment = None
+
+            while ps.current_char:
+                entry = self.get_entry_or_junk(ps)
+                blank_lines = ps.skip_blank_block()
+                if isinstance(entry, ast.Comment) and not blank_lines and ps.current_char:
+                    last_comment = entry
+                    continue
+                if last_comment is not None:
+                    if isinstance(entry, (ast.Message, ast.Term)):
+                        entry.comment = last_comment
+                        if self.with_spans:
+                            entry.span.start = entry.comment.span.start
+                    else:
+                        body.append(last_comment)
+                    last_comment = None
+                body.append(entry)
+
+            resource = ast.Resource(body)
+            if self.with_spans:
+                resource.add_span(0, ps.index)
+            return resource
+
+        def parse_entry(self, source: str):
+            ps = LinguiniCompatibleStream(source)
+            ps.skip_blank_block()
+            while ps.current_char == "#":
+                skipped = self.get_entry_or_junk(ps)
+                if isinstance(skipped, ast.Junk):
+                    return skipped
+                ps.skip_blank_block()
+            return self.get_entry_or_junk(ps)
+
+        @parser_module.with_span
+        def get_comment(self, ps):
+            level = -1
+            content = ""
+            while True:
+                current_level = -1
+                while ps.current_char == "#" and current_level < (2 if level == -1 else level):
+                    ps.next()
+                    current_level += 1
+                if level == -1:
+                    level = current_level
+
+                if ps.current_char != stream_module.EOL:
+                    if ps.current_char == " ":
+                        ps.next()
+                    char = ps.take_char(lambda value: value != stream_module.EOL)
+                    while char:
+                        content += char
+                        char = ps.take_char(lambda value: value != stream_module.EOL)
+
+                if ps.is_next_line_comment(level):
+                    content += stream_module.EOL
+                    ps.next()
+                else:
+                    break
+
+            comment_type = (ast.Comment, ast.GroupComment, ast.ResourceComment)[level]
+            return comment_type(content)
+
+        @parser_module.with_span
+        def get_call_argument(self, ps):
+            expression = self.get_inline_expression(ps)
+            ps.skip_blank()
+            if ps.current_char != ":":
+                return expression
+            if isinstance(expression, ast.MessageReference) and expression.attribute is None:
+                ps.next()
+                ps.skip_blank()
+                return ast.NamedArgument(expression.id, self.get_inline_expression(ps))
+            raise module.ParseError("E0009")
+
+        def get_escape_sequence(self, ps):
+            if ps.current_char == "{":
+                ps.next()
+                return r"\{"
+            return super().get_escape_sequence(ps)
+
+        def get_inline_expression(self, ps):
+            expression = super().get_inline_expression(ps)
+            if (isinstance(expression, ast.MessageReference)
+                    and expression.attribute is None
+                    and ps.current_peek == "."):
+                ps.skip_to_peek()
+                ps.next()
+                expression.attribute = self.get_identifier(ps)
+                if self.with_spans:
+                    expression.span.end = ps.index
+            return expression
+
+    return LinguiniCompatibleParser
 
 
 def parse_resource(text: str):
     module = syntax()
-    resource = module.FluentParser(with_spans=True).parse(text.replace("\r\n", "\n"))
+    normalized = text.replace("\r\n", "\n")
+    resource = _parser_class()(with_spans=True).parse(normalized)
     seen = set()
     for entry in resource.body:
         if isinstance(entry, module.ast.Junk):
             details = "; ".join(f"{a.code}: {a.message}" for a in entry.annotations)
-            line = text[:entry.span.start].count("\n") + 1
+            line = normalized[:entry.span.start].count("\n") + 1
             raise FluentSyntaxError(f"FTL, строка {line}: {details}")
         if isinstance(entry, (module.ast.Message, module.ast.Term)):
             key = entry_id(entry)
             if key in seen:
                 raise FluentSyntaxError(f"Повторяющийся ключ FTL: {key}")
             seen.add(key)
-            attributes_seen = set()
-            for attribute in entry.attributes:
-                if attribute.id.name in attributes_seen:
-                    raise FluentSyntaxError(f"Повторяющийся атрибут {key}.{attribute.id.name}")
-                attributes_seen.add(attribute.id.name)
     return resource
 
 

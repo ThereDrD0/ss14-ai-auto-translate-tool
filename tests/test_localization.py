@@ -122,9 +122,23 @@ class SyntaxTests(unittest.TestCase):
             self.check("a = Hello", '[{"id":"a","text":"a = Привет"}]')
 
     def test_invalid_syntax_and_duplicates_rejected(self):
-        for text in ("a = Привет {", "a = First\na = Second", "a = Foo\n    .desc = A\n    .desc = B"):
+        for text in ("a = Привет {", "a = First\na = Second"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 self.check("a = Hello", text)
+
+    def test_linguini_syntax_differences_are_supported(self):
+        parse_resource("#comment without a space\n#### comment with extra hashes\na = { \"\\{\" }\n")
+        parse_resource("a = { message .attribute }\n")
+        parse_resource(
+            "a = { -term(variable: $value, message: other, term: -other, "
+            "function: FUNC(), nested: { $value }) }\n"
+        )
+        duplicate_attributes = parse_resource("a = Foo\n    .desc = A\n    .desc = B\n")
+        self.assertEqual(len(entries(duplicate_attributes)["a"].attributes), 2)
+
+    def test_unterminated_string_is_rejected_instead_of_hanging_like_linguini(self):
+        with self.assertRaises(FluentSyntaxError):
+            parse_resource('a = { "unterminated }')
 
     def test_missing_extra_and_reference_changes_rejected(self):
         for source, target in (("a = Hello\nb = World", "a = Привет"),
