@@ -203,12 +203,19 @@ class LanguageTests(unittest.TestCase):
         text = ("ent-WeaponSubMachineGunSP91RC = SP-91-RC\n"
                 "    .desc = Компактный пистолет-пулемёт для контроля беспорядков.\n")
         node = entries(parse_resource(text))["ent-WeaponSubMachineGunSP91RC"]
-        self.assertLess(self.ru.ratio("SP-91-RC"), .5)
+        self.assertEqual(self.ru.ratio("SP-91-RC"), 1)
         self.ru.validate(node)
         self.assertFalse(self.ru.needs_translation(node))
         english = entries(parse_resource("name = SP-91-RC\n    .desc = Compact submachine gun.\n"))["name"]
         self.assertTrue(self.ru.needs_translation(english))
         self.assertLess(self.ru.ratio("HELLO WORLD"), .5)
+
+    def test_model_code_exclusion_does_not_eat_prose_or_partial_codes(self):
+        self.assertEqual(self.ru.ratio("LSE-400b"), 1)
+        self.assertIn("LSE-400bc", self.ru.pass_list.strip("LSE-400bc"))
+        self.assertIn("Hello2", self.ru.pass_list.strip("Hello2"))
+        self.assertLess(self.ru.ratio("SP-91-RC Compact submachine gun"), .5)
+        self.assertLess(self.ru.ratio("LSE-400b English description"), .5)
 
     def test_response_language_share_is_combined_across_messages(self):
         source = "code = SP-91-RC\ndescription = Compact submachine gun.\n"

@@ -13,6 +13,7 @@ from .paths import TOOL_ROOT
 
 
 TAG_RE = re.compile(r"</?[^>]+>|https?://\S+")
+MODEL_CODE_RE = re.compile(r"(?<![\w-])(?=[A-Z0-9-]*\d)[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*[a-z]?(?![\w-])")
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,8 @@ class PassList:
 
     def strip(self, text: str) -> str:
         text = RICH_TAG_RE.sub(lambda match: " " if match.group(2).lower() in RICH_TAG_NAMES else match.group(0), text)
-        return self.pattern.sub(" ", TAG_RE.sub(" ", text))
+        text = self.pattern.sub(" ", TAG_RE.sub(" ", text))
+        return MODEL_CODE_RE.sub(" ", text)
 
     def occurrences(self, text: str):
         return Counter(match.group(0) for match in self.pattern.finditer(text))
