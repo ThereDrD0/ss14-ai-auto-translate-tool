@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from textual.widgets import Checkbox, OptionList, RichLog
+from textual.color import Color
 
 from ss14_localization.tui import _cache_path, _inventory, _load_cache, create_app, summary_counts
 
@@ -82,10 +83,14 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 app.query_one("#models").display = True
                 checkbox = app.query_one("#save-tokens", Checkbox)
                 self.assertFalse(checkbox.value)
+                self.assertIn("▐ ▌", checkbox.render().plain)
+                self.assertEqual(checkbox.styles.background, Color.parse("#111821"))
                 await pilot.press("f3")
                 self.assertTrue(checkbox.value)
+                self.assertIn("▐✓▌", checkbox.render().plain)
                 await pilot.press("f3")
                 self.assertFalse(checkbox.value)
+                self.assertIn("▐ ▌", checkbox.render().plain)
 
     async def test_selection_translation_retries_and_summary(self):
         requests = []

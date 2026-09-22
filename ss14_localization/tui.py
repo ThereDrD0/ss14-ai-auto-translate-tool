@@ -135,6 +135,11 @@ def create_app(repo: Path):
     if not sources:
         raise ValueError(f"В {repo / DEFAULT_LOCALE_ROOT} нет исходных файлов .ftl")
 
+    class SaveTokensCheckbox(Checkbox):
+        @property
+        def BUTTON_INNER(self) -> str:
+            return "✓" if self.value else " "
+
     class TranslationApp(App):
         TITLE = "Перевод локализации SS14"
         BINDINGS = [Binding("ctrl+c", "quit", "Выход"),
@@ -155,7 +160,16 @@ def create_app(repo: Path):
         OptionList:focus { border: round #83b4c7; }
         OptionList > .option-list--option-highlighted { background: #355467; color: #ffffff; }
         #model-list { width: 60%; }
-        #save-tokens { height: 3; width: 70%; }
+        #save-tokens {
+            height: 1;
+            width: auto;
+            border: none;
+            padding: 0;
+            background: #111821;
+        }
+        #save-tokens:focus { border: none; background: #111821; background-tint: #111821 0%; }
+        #save-tokens > .toggle--button { background: #355467; color: #a8cfb1; }
+        #save-tokens:focus > .toggle--label { background: #355467; color: #ffffff; }
         #stage, #eta, #active { height: 1; }
         #stage { color: #a9c7d9; text-style: bold; }
         #bar { height: 3; margin: 1 0; }
@@ -196,7 +210,8 @@ def create_app(repo: Path):
                 yield Static("Выберите модель из /v1/models", classes="title")
                 yield Static("Загрузка моделей...", id="model-status")
                 yield OptionList(id="model-list")
-                yield Checkbox("Экономить токены: без примеров готового перевода", value=False, id="save-tokens")
+                yield SaveTokensCheckbox("Экономить токены: без примеров готового перевода",
+                                         value=False, id="save-tokens")
             with Vertical(id="work"):
                 yield Static("Подготовка", id="stage")
                 yield ProgressBar(total=100, show_eta=False, id="bar")
