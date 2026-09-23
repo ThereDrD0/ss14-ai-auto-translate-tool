@@ -140,6 +140,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 app.phase = "work"
                 app.query_one("#choose").display = False
                 app.query_one("#work").display = True
+                await pilot.pause()
                 app._log(
                     "ГОТОВО",
                     source / "a.ftl",
@@ -148,6 +149,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 )
                 log = app.query_one("#log", RichLog)
                 log.focus()
+                self.assertIn("▶ изменения", log.lines[0].text)
                 await pilot.press("down", "enter")
                 self.assertTrue(app.log_items[0][5])
                 self.assertIn("Привет", "\n".join(line.text for line in log.lines))
@@ -183,7 +185,12 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.focused.id, "review-diff")
                 await pilot.press("tab")
                 assert app.focused is not None
-                self.assertEqual(app.focused.id, "review-done")
+                self.assertEqual(app.focused.id, "review-log")
+                await pilot.click("#review-log")
+                self.assertEqual(app.phase, "log")
+                await pilot.press("f4")
+                await pilot.pause()
+                self.assertEqual(app.phase, "review")
                 await pilot.click("#review-done")
                 self.assertEqual(app.phase, "summary")
 
@@ -287,6 +294,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 async with app.run_test() as pilot:
                     await pilot.pause()
                     await pilot.press("down")
+                    await pilot.pause()
                     self.assertEqual(app.source, "nl-NL")
                     self.assertNotIn("nl-NL", app.target_options)
                     await pilot.press("up", "tab", "enter")
@@ -315,6 +323,22 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(
                         any(item[3] is not None and not item[5] for item in app.log_items)
                     )
+                    await pilot.press("f4")
+                    self.assertEqual(app.phase, "log")
+                    diff_index = next(
+                        index
+                        for index, item in enumerate(app.log_items)
+                        if item[0] == "ГОТОВО" and item[3] != item[4]
+                    )
+                    app._toggle_log(diff_index)
+                    log_text = "\n".join(
+                        line.text for line in app.query_one("#log", RichLog).lines
+                    )
+                    self.assertRegex(log_text, r"1\s+- a = Hello")
+                    self.assertIn("1 + a = Привет", log_text)
+                    await pilot.press("f4")
+                    await pilot.pause()
+                    self.assertEqual(app.phase, "review")
                     before_retry = len(requests)
                     await pilot.press("space")
                     await pilot.pause()

@@ -323,6 +323,7 @@ def create_app(repo: Path):
             Binding("ctrl+q", "noop", "", show=False, priority=True),
             Binding("f2", "toggle_auto_scroll", "Автопрокрутка", priority=True),
             Binding("f3", "toggle_save_tokens", "Экономия токенов", priority=True),
+            Binding("f4", "toggle_log", "Журнал/проверка", priority=True),
             Binding("left", "previous_column", "Левая колонка", show=False),
             Binding("right", "next_column", "Правая колонка", show=False),
             Binding("alt+enter", "show_summary", "Итоги", priority=True),
@@ -421,6 +422,7 @@ def create_app(repo: Path):
                 with Horizontal(id="review-columns"):
                     yield OptionList(id="review-files")
                     yield RichLog(wrap=True, auto_scroll=False, id="review-diff")
+                yield Button("Журнал перевода · F4", id="review-log")
                 yield Button("К итогам · Alt+Enter", id="review-done")
             with Vertical(id="summary"):
                 yield Static("Итоги перевода", classes="title")
@@ -488,7 +490,7 @@ def create_app(repo: Path):
                 self.query_one("#target-list", OptionList).focus()
 
         def action_toggle_auto_scroll(self) -> None:
-            if self.phase not in {"work", "failed"}:
+            if self.phase not in {"work", "log", "failed"}:
                 return
             log = self.query_one("#log", RichLog)
             log.auto_scroll = not log.auto_scroll
@@ -500,9 +502,18 @@ def create_app(repo: Path):
             if self.phase == "review":
                 self._show_summary()
 
+        def action_toggle_log(self) -> None:
+            if self.phase == "review":
+                self._show_log()
+            elif self.phase == "log":
+                self._show_review()
+
         def on_button_pressed(self, event):
-            if event.button.id == "review-done" and self.phase == "review":
-                self._show_summary()
+            if self.phase == "review":
+                if event.button.id == "review-log":
+                    self._show_log()
+                elif event.button.id == "review-done":
+                    self._show_summary()
 
         def action_toggle_save_tokens(self) -> None:
             if self.phase == "models":
@@ -523,7 +534,9 @@ def create_app(repo: Path):
             state = "включена" if self.query_one("#log", RichLog).auto_scroll else "выключена"
             self.query_one("#hint", Static).update(
                 "Tab журнал · ↑/↓ строка · Enter/клик изменения · "
-                f"PgUp/PgDn листать · F2 прокрутка: {state} · Ctrl+C выход"
+                f"PgUp/PgDn листать · F2 прокрутка: {state} · "
+                + ("F4 проверка · " if self.phase == "log" else "")
+                + "Ctrl+C выход"
             )
 
         def _load_models(self) -> None:
@@ -567,7 +580,7 @@ def create_app(repo: Path):
         def on_key(self, event) -> None:
             if self.phase == "models" and not self.model_names and event.key == "enter":
                 self._load_models()
-            elif self.phase == "work" and self.focused is self.query_one("#log"):
+            elif self.phase in {"work", "log"} and self.focused is self.query_one("#log"):
                 if event.key in {"home", "end"}:
                     log = self.query_one("#log", RichLog)
                     (log.scroll_home if event.key == "home" else log.scroll_end)(animate=False)
@@ -670,7 +683,7 @@ def create_app(repo: Path):
             }
             line = Text()
             if before is not None and after is not None and before != after:
-                line.append("▼ " if opened else "▶ ", style="#a9c7d9")
+                line.append("▼ изменения " if opened else "▶ изменения ", style="#a8cfb1")
             line.append(f"[{status}] ", style=colors.get(status, "#c2d0dc"))
             name = (
                 str(path.relative_to(repo))
@@ -707,7 +720,7 @@ def create_app(repo: Path):
                 log.scroll_to(y=previous, animate=False)
 
         def _toggle_log_at(self, row):
-            if self.phase not in {"work", "failed"}:
+            if self.phase not in {"work", "log", "failed"}:
                 return
             for index, start in enumerate(self.log_rows):
                 end = (
@@ -1078,6 +1091,13 @@ def create_app(repo: Path):
             self.translation_total = self.total
             self._show_review()
 
+        def _show_log(self):
+            self.query_one("#review").display = False
+            self.query_one("#work").display = True
+            self.phase = "log"
+            self.query_one("#log", RichLog).focus()
+            self._work_hint()
+
         def _show_review(self):
             self.query_one("#work").display = False
             self.query_one("#summary").display = False
@@ -1095,7 +1115,7 @@ def create_app(repo: Path):
             self.call_after_refresh(self._refresh_review)
             self.query_one("#hint", Static).update(
                 "Tab панели · ↑/↓ файлы или изменения · Space повтор · "
-                "Enter выбрать · Alt+Enter итоги · Ctrl+C выход"
+                "Enter выбрать · F4 журнал · Alt+Enter итоги · Ctrl+C выход"
             )
 
         def _refresh_review(self):
