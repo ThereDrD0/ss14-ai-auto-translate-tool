@@ -10,10 +10,10 @@ from threading import Thread
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import Checkbox, OptionList, RichLog
+from textual.widgets import Checkbox, Input, OptionList, RichLog
 from textual.color import Color
 
-from ss14_localization.tui import TokenEta, _cache_path, _inventory, _load_cache, create_app, summary_counts
+from ss14_localization.tui import TokenEta, _cache_path, _diff_lines, _inventory, _load_cache, create_app, summary_counts
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
@@ -52,6 +52,13 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(before[0], after[0])
             self.assertNotEqual(before[3]["a.ftl"], after[3]["a.ftl"])
 
+    def test_diff_keeps_line_numbers_indent_and_marks_changed_words(self):
+        rows = _diff_lines("a = Hello\n    .desc = Old word\n", "a = Привет\n    .desc = New word\n")
+        self.assertEqual([row.plain.split()[-1] for row in rows], ["Hello", "Привет", "word", "word"])
+        self.assertIn("   2", rows[2].plain)
+        self.assertIn("    .desc", rows[2].plain)
+        self.assertTrue(any("on #285b3c" in str(span.style) for span in rows[-1].spans))
+
     async def test_autoscroll_can_be_paused_while_log_grows(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
@@ -83,6 +90,55 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertGreater(log.scroll_y, 0)
                 await pilot.press("ctrl+q")
                 self.assertTrue(app.is_running)
+
+    async def test_log_diff_opens_by_keyboard_and_mouse(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "Resources" / "Locale" / "en-US"
+            source.mkdir(parents=True)
+            (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+            app = create_app(repo)
+            async with app.run_test(size=(80, 25)) as pilot:
+                app.phase = "work"
+                app.query_one("#choose").display = False
+                app.query_one("#work").display = True
+                app._log("ГОТОВО", source / "a.ftl", before="a = Hello\n", after="a = Привет\n")
+                log = app.query_one("#log", RichLog)
+                log.focus()
+                await pilot.press("down", "enter")
+                self.assertTrue(app.log_items[0][5])
+                self.assertIn("Привет", "\n".join(line.text for line in log.lines))
+                await pilot.click("#log", offset=(5, 1))
+                self.assertFalse(app.log_items[0][5])
+
+    async def test_review_changes_with_file_selection_and_done_button(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "Resources" / "Locale" / "en-US"
+            target = source.parent / "ru-RU"
+            source.mkdir(parents=True)
+            target.mkdir()
+            for name in ("a", "b"):
+                (source / f"{name}.ftl").write_text(f"{name} = Hello\n", encoding="utf-8")
+                (target / f"{name}.ftl").write_text(f"{name} = {'Привет ' * 25}\n", encoding="utf-8")
+            app = create_app(repo)
+            app.review_files = [target / "a.ftl", target / "b.ftl"]
+            app.review_before = {path: f"{path.stem} = Hello\n" for path in app.review_files}
+            async with app.run_test(size=(80, 25)) as pilot:
+                app._show_review()
+                await pilot.pause()
+                view = app.query_one("#review-diff", RichLog)
+                self.assertTrue(view.wrap)
+                self.assertGreater(len(view.lines), 4)
+                self.assertIn("a.ftl", "\n".join(line.text for line in view.lines))
+                await pilot.press("down")
+                self.assertIn("b.ftl", "\n".join(line.text for line in view.lines))
+                await pilot.press("tab")
+                self.assertEqual(app.focused.id, "review-diff")
+                await pilot.press("tab")
+                self.assertEqual(app.focused.id, "review-done")
+                await pilot.click("#review-done")
+                self.assertEqual(app.phase, "summary")
 
     async def test_model_screen_token_setting_defaults_on(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -168,6 +224,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 (target / "c.ftl").write_text("c = Привет\n", encoding="utf-8")
                 app.error_log_path = repo / "translation-errors.log"
                 async with app.run_test() as pilot:
+                    await pilot.pause()
                     await pilot.press("down")
                     self.assertEqual(app.source, "nl-NL")
                     self.assertNotIn("nl-NL", app.target_options)
@@ -181,15 +238,48 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("down", "enter")
                     for _ in range(100):
                         await pilot.pause(0.1)
-                        if app.phase in {"summary", "failed"}:
+                        if app.phase in {"review", "failed"}:
                             break
+                    await pilot.pause()
+                    self.assertEqual(app.phase, "review")
+                    self.assertEqual(len(app.review_files), 1)
+                    self.assertEqual(app.review_files[0].name, "a.ftl")
+                    self.assertTrue(app.query_one("#review-diff", RichLog).wrap)
+                    self.assertIn("Привет", "\n".join(line.text for line in
+                                                  app.query_one("#review-diff", RichLog).lines))
+                    self.assertTrue(any(item[3] is not None and not item[5] for item in app.log_items))
+                    before_retry = len(requests)
+                    await pilot.press("space")
+                    await pilot.pause()
+                    self.assertEqual(type(app.screen).__name__, "RetranslatePrompt")
+                    await pilot.press("space")
+                    for _ in range(100):
+                        await pilot.pause(0.1)
+                        if len(requests) > before_retry and app.phase == "review":
+                            break
+                    self.assertEqual(app.phase, "review")
+                    self.assertGreater(len(requests), before_retry)
+                    before_retry = len(requests)
+                    await pilot.press("space")
+                    await pilot.pause()
+                    note = app.screen.query_one("#prompt-input", Input)
+                    note.value = "Сделай точнее"
+                    note.focus()
+                    await pilot.press("enter")
+                    for _ in range(100):
+                        await pilot.pause(0.1)
+                        if len(requests) > before_retry and app.phase == "review":
+                            break
+                    self.assertEqual(app.phase, "review")
+                    self.assertIn("Сделай точнее", requests[-1]["messages"][0]["content"])
+                    await pilot.press("alt+enter")
                     self.assertEqual(app.phase, "summary")
                     self.assertEqual(app.success, 1)
                     self.assertEqual(app.skipped, 1)
                     self.assertEqual(app.total, 2)
                     self.assertEqual(len(app.failures), 1)
                     self.assertEqual(app.failures[0].path.name, "b.ftl")
-                    self.assertEqual(app.prompt_tokens + app.completion_tokens, 90)
+                    self.assertEqual(app.prompt_tokens + app.completion_tokens, 126)
                     self.assertEqual(app.retry_tokens, 36)
                     self.assertIn("ПОВТОР", "\n".join(line.text for line in app.query_one("#log", RichLog).lines))
                     self.assertEqual(summary_counts(app.success, app.failures, app.skipped,
@@ -229,13 +319,16 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                         await pilot.press("down", "enter")
                         for _ in range(100):
                             await pilot.pause(0.1)
-                            if again.phase in {"summary", "failed"}:
+                            if again.phase in {"review", "failed"}:
                                 break
+                        await pilot.pause()
+                        self.assertEqual(again.phase, "review")
+                        await pilot.press("alt+enter")
                         self.assertEqual(again.phase, "summary")
                         self.assertEqual(again.skipped, 2)
                         self.assertEqual(again.total, 1)
                         self.assertEqual(len(again.failures), 1)
-                        self.assertEqual(len(requests), 7)
+                self.assertEqual(len(requests), 9)
                 (source.parent / "ru-RU" / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
                 edited = create_app(repo)
                 edited.error_log_path = repo / "translation-errors.log"
@@ -248,12 +341,15 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("down", "enter")
                     for _ in range(100):
                         await pilot.pause(0.1)
-                        if edited.phase in {"summary", "failed"}:
+                        if edited.phase in {"review", "failed"}:
                             break
+                    await pilot.pause()
+                    self.assertEqual(edited.phase, "review")
+                    await pilot.press("alt+enter")
                     self.assertEqual(edited.phase, "summary")
                     self.assertEqual(edited.success, 1)
                     self.assertEqual(edited.skipped, 1)
-                    self.assertEqual(len(requests), 12)
+                    self.assertEqual(len(requests), 14)
         finally:
             server.shutdown()
             server.server_close()
