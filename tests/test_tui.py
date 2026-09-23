@@ -84,7 +84,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("ctrl+q")
                 self.assertTrue(app.is_running)
 
-    async def test_model_screen_token_setting_defaults_off(self):
+    async def test_model_screen_token_setting_defaults_on(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             source = repo / "Resources" / "Locale" / "en-US"
@@ -96,15 +96,15 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 app.query_one("#choose").display = False
                 app.query_one("#models").display = True
                 checkbox = app.query_one("#save-tokens", Checkbox)
+                self.assertTrue(checkbox.value)
+                self.assertIn("▐✓▌", checkbox.render().plain)
+                self.assertEqual(checkbox.styles.background, Color.parse("#111821"))
+                await pilot.press("f3")
                 self.assertFalse(checkbox.value)
                 self.assertIn("▐ ▌", checkbox.render().plain)
-                self.assertEqual(checkbox.styles.background, Color.parse("#111821"))
                 await pilot.press("f3")
                 self.assertTrue(checkbox.value)
                 self.assertIn("▐✓▌", checkbox.render().plain)
-                await pilot.press("f3")
-                self.assertFalse(checkbox.value)
-                self.assertIn("▐ ▌", checkbox.render().plain)
 
     async def test_selection_translation_retries_and_summary(self):
         requests = []

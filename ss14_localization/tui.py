@@ -247,7 +247,7 @@ def create_app(repo: Path):
                 yield Static("Загрузка моделей...", id="model-status")
                 yield OptionList(id="model-list")
                 yield SaveTokensCheckbox("Экономить токены: без примеров готового перевода",
-                                         value=False, id="save-tokens")
+                                         value=True, id="save-tokens")
             with Vertical(id="work"):
                 yield Static("Подготовка", id="stage")
                 yield ProgressBar(total=100, show_eta=False, id="bar")
@@ -498,7 +498,7 @@ def create_app(repo: Path):
             self.query_one("#bar", ProgressBar).update(progress=done)
             self._tick()
 
-        def _translate_worker(self, config, save_tokens=False):
+        def _translate_worker(self, config, save_tokens=True):
             try:
                 args = SimpleNamespace(
                     repo_root=repo, source_culture=self.source, target_culture=self.target,

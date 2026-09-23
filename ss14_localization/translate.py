@@ -338,7 +338,7 @@ def _unpack_message(text, original_id):
 
 async def translate_file(path, client, prompt, chunk_size, source_text=None, target_culture=None,
                          *, allow_partial=False, dry_run=False, checker=None, budget=None, text=None,
-                         messages=None, context=None, save_tokens=False):
+                         messages=None, context=None, save_tokens=True):
     text = read_text(path) if text is None else text
     checker = checker or LanguageChecker("en-US", target_culture, load_pass_list())
     budget = budget or OutputBudget.from_env()
@@ -363,7 +363,7 @@ async def translate_file(path, client, prompt, chunk_size, source_text=None, tar
 
 async def translate_files(files, prompt, chunk_size, source_texts=None, target_culture=None, concurrency=2,
                           *, allow_partial=False, dry_run=False, checker=None, budget=None, texts=None,
-                          on_event=None, on_usage=None, on_retry=None, ai_config=None, save_tokens=False,
+                          on_event=None, on_usage=None, on_retry=None, ai_config=None, save_tokens=True,
                           plans=None):
     checker = checker or LanguageChecker("en-US", target_culture, load_pass_list())
     budget = budget or OutputBudget.from_env()

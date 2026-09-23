@@ -578,6 +578,14 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConfigurationTests(Fixture):
+    def test_token_saving_is_default_and_can_be_disabled(self):
+        import argparse
+        from ss14_localization.cli import _translation_options
+        parser = argparse.ArgumentParser()
+        _translation_options(parser)
+        self.assertTrue(parser.parse_args([]).save_tokens)
+        self.assertFalse(parser.parse_args(["--no-save-tokens"]).save_tokens)
+
     def test_direct_translation_cannot_overwrite_source_locale(self):
         import subprocess
         import sys
@@ -652,7 +660,7 @@ class ConfigurationTests(Fixture):
             self.assertIn("{ $user }", target)
             self.assertGreater(len(requests), 0)
             self.assertTrue(all(not text.startswith("[") for text in requests))
-            self.assertTrue(any("gun = Desert Eagle" in context for context in contexts))
+            self.assertFalse(any("gun = Desert Eagle" in context for context in contexts))
             self.assertEqual(json.loads(report.read_text(encoding="utf-8"))["failed_files"], [])
         finally:
             server.shutdown()

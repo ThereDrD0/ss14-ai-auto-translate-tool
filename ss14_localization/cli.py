@@ -136,7 +136,8 @@ def _translation_options(parser):
     parser.add_argument("--chunk-size", type=int, default=int(os.environ.get("TRANSLATE_CHUNK_SIZE", "0")))
     parser.add_argument("--concurrency", type=int, default=int(os.environ.get("TRANSLATE_CONCURRENCY", "2")))
     parser.add_argument("--allow-partial", action="store_true")
-    parser.add_argument("--save-tokens", action="store_true", help="не отправлять готовые переводы как примеры")
+    parser.add_argument("--save-tokens", action=argparse.BooleanOptionalAction, default=True,
+                        help="не отправлять готовые переводы как примеры (по умолчанию включено)")
     parser.add_argument("--report-json", type=Path)
     parser.add_argument("--dry-run", action="store_true")
 
