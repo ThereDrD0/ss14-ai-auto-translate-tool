@@ -380,6 +380,21 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("Предыдущая попытка", client.calls[1][-1]["content"])
         self.assertEqual(retries[0][-2:], ("a = Hello", "a = Привет {"))
 
+    async def test_request_names_exact_pass_terms_for_each_key(self):
+        class TermsClient:
+            async def chat(self, messages):
+                self.messages = messages
+                return "a = Получает IDs всех контейнеров.\nb = Получает строковый id контейнеров."
+
+        checker = LanguageChecker("en-US", "ru-RU", PassList(("ID", "IDs", "NT")))
+        client = TermsClient()
+        chunk = list(message_map("a = Gets the IDs of all containers.\nb = Gets the string id of containers.").values())
+        result = await _translate_chunk(client, "Prompt", chunk, "ru-RU", checker)
+        self.assertEqual(set(result), {"a", "b"})
+        self.assertIn("a: 'IDs'", client.messages[0]["content"])
+        self.assertIn("b: 'id'", client.messages[0]["content"])
+        self.assertNotIn("'NT'", client.messages[0]["content"])
+
     async def test_truncation_reduces_chunk(self):
         client = FakeClient(truncated_first=True)
         retries = []

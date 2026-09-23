@@ -161,6 +161,16 @@ def _parse_translation_response(response, expected, target_culture=None, checker
 async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, budget=None, context=()):
     budget = budget or OutputBudget.from_env()
     payload = "\n\n".join(message.text for message in chunk)
+    protected = []
+    if checker:
+        for message in chunk:
+            node = entries(parse_resource(message.text))[message.id]
+            terms = checker.pass_list.occurrences("\n".join(visible_parts(node)))
+            if terms:
+                protected.append(f"{message.id}: {', '.join(repr(term) for term in terms.elements())}")
+    if protected:
+        prompt += ("\n\nВ этом блоке сохраните в значениях указанных ключей следующие написания "
+                   "дословно, с исходным регистром и числом повторений:\n" + "\n".join(protected))
     if not budget.fits(payload, prompt):
         raise ResponseTruncatedError("Блок не помещается в заданный бюджет ответа/контекста")
     expected = {message.id: message for message in chunk}
