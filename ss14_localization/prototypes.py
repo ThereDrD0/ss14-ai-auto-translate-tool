@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
 import hashlib
 import json
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-import re
 
 from .dependencies import import_or_install
 from .filesystem import read_text, write_text_if_changed
-from .fluent import message_map, parse_messages, render_entity_message, same_message_payload
+from .fluent import (
+    message_map,
+    parse_messages,
+    render_entity_message,
+    same_message_payload,
+)
 
 
 @dataclass(frozen=True)
@@ -23,7 +28,9 @@ class EntityLocalization:
     suffix: str | None
 
 
-def extract_entity_localizations(repo_root: Path, prototypes_root: Path) -> list[EntityLocalization]:
+def extract_entity_localizations(
+    repo_root: Path, prototypes_root: Path
+) -> list[EntityLocalization]:
     absolute_root = repo_root / prototypes_root
     entries: list[EntityLocalization] = []
     yaml = _yaml_parser()
@@ -64,7 +71,10 @@ def build_entity_ftl(
         if preserved is not None and same_message_payload(source_message, preserved):
             preserved = None
 
-        if preserved is not None and source_hashes.get(entry.message_id, source_hash) == source_hash:
+        if (
+            preserved is not None
+            and source_hashes.get(entry.message_id, source_hash) == source_hash
+        ):
             output.extend(preserved.lines)
             continue
 
@@ -80,7 +90,9 @@ def write_entity_ftl(
     state_path: Path | None = None,
     dry_run: bool = False,
 ) -> tuple[int, bool]:
-    entries = _unique_entity_localizations(extract_entity_localizations(repo_root, prototypes_root))
+    entries = _unique_entity_localizations(
+        extract_entity_localizations(repo_root, prototypes_root)
+    )
     absolute_output = repo_root / output_path
     absolute_state = repo_root / state_path if state_path is not None else None
     existing = read_text(absolute_output) if absolute_output.exists() else None
@@ -95,7 +107,9 @@ def write_entity_ftl(
     return len(entries), changed
 
 
-def _unique_entity_localizations(entries: list[EntityLocalization]) -> list[EntityLocalization]:
+def _unique_entity_localizations(
+    entries: list[EntityLocalization],
+) -> list[EntityLocalization]:
     result: list[EntityLocalization] = []
     seen: set[str] = set()
 
@@ -139,14 +153,20 @@ def _read_source_state(path: Path | None) -> dict[str, str]:
     if not isinstance(sources, dict):
         return {}
 
-    return {key: value for key, value in sources.items() if isinstance(key, str) and isinstance(value, str)}
+    return {
+        key: value
+        for key, value in sources.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
 
 
 def _source_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _read_entity_localization(repo_root: Path, path: Path, item: dict[str, str]) -> EntityLocalization | None:
+def _read_entity_localization(
+    repo_root: Path, path: Path, item: dict[str, str]
+) -> EntityLocalization | None:
     if item.get("type") != "entity":
         return None
 
@@ -183,7 +203,7 @@ def _read_yaml_items(yaml: Any, path: Path) -> list[dict[str, str]]:
     text = read_text(path)
     try:
         data = yaml.load(text)
-    except Exception:
+    except Exception:  # noqa: BLE001 — при неподдерживаемом YAML пробуем штатный запасной разбор.
         return _iter_top_level_yaml_items(text)
 
     if not isinstance(data, list):
@@ -202,8 +222,12 @@ def _read_yaml_mapping(item: dict[Any, Any]) -> dict[str, str]:
     return result
 
 
-FIELD_RE = re.compile(r"^(?P<indent>\s*)(?P<key>type|id|name|description|suffix|localizationId):(?:\s*(?P<value>.*))?$")
-FIRST_FIELD_RE = re.compile(r"^-\s+(?P<key>type|id|name|description|suffix|localizationId):(?:\s*(?P<value>.*))?$")
+FIELD_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<key>type|id|name|description|suffix|localizationId):(?:\s*(?P<value>.*))?$"
+)
+FIRST_FIELD_RE = re.compile(
+    r"^-\s+(?P<key>type|id|name|description|suffix|localizationId):(?:\s*(?P<value>.*))?$"
+)
 
 
 def _iter_top_level_yaml_items(text: str) -> list[dict[str, str]]:
@@ -244,7 +268,9 @@ def _parse_yaml_item(lines: list[str]) -> dict[str, str]:
         indent = len(field.groupdict().get("indent") or "  ")
 
         if value in {"|", "|-", "|+", ">", ">-", ">+"}:
-            block, index = _read_block_scalar(lines, index + 1, indent + 2, folded=value.startswith(">"))
+            block, index = _read_block_scalar(
+                lines, index + 1, indent + 2, folded=value.startswith(">")
+            )
             result[key] = block.strip("\n")
             continue
 
@@ -257,7 +283,9 @@ def _parse_yaml_item(lines: list[str]) -> dict[str, str]:
     return result
 
 
-def _read_block_scalar(lines: list[str], start: int, expected_indent: int, folded: bool) -> tuple[str, int]:
+def _read_block_scalar(
+    lines: list[str], start: int, expected_indent: int, folded: bool
+) -> tuple[str, int]:
     block: list[str] = []
     index = start
 

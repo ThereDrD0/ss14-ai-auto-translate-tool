@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Callable
-from functools import lru_cache
-from dataclasses import dataclass
 import importlib
 import re
+from collections import Counter
+from dataclasses import dataclass
+from functools import lru_cache
 
 from .constants import ZERO_WIDTH_SPACE
 from .dependencies import import_or_install
@@ -33,7 +32,9 @@ def _parser_class():
             if self.current_char != stream_module.EOL:
                 return False
 
-            offset = self.index + (2 if self.get(self.index) == "\r" and self.get(self.index + 1) == "\n" else 1)
+            offset = self.index + (
+                2 if self.get(self.index) == "\r" and self.get(self.index + 1) == "\n" else 1
+            )
             count = 0
             while self.get(offset + count) == "#":
                 count += 1
@@ -127,9 +128,11 @@ def _parser_class():
 
         def get_inline_expression(self, ps):
             expression = super().get_inline_expression(ps)
-            if (isinstance(expression, ast.MessageReference)
-                    and expression.attribute is None
-                    and ps.current_peek == "."):
+            if (
+                isinstance(expression, ast.MessageReference)
+                and expression.attribute is None
+                and ps.current_peek == "."
+            ):
                 ps.skip_to_peek()
                 ps.next()
                 expression.attribute = self.get_identifier(ps)
@@ -148,7 +151,7 @@ def parse_resource(text: str):
     for entry in resource.body:
         if isinstance(entry, module.ast.Junk):
             details = "; ".join(f"{a.code}: {a.message}" for a in entry.annotations)
-            line = normalized[:entry.span.start].count("\n") + 1
+            line = normalized[: entry.span.start].count("\n") + 1
             raise FluentSyntaxError(f"FTL, строка {line}: {details}")
         if isinstance(entry, (module.ast.Message, module.ast.Term)):
             key = entry_id(entry)
@@ -165,7 +168,9 @@ def entry_id(entry) -> str:
 
 def entries(resource) -> dict:
     ast = syntax().ast
-    return {entry_id(node): node for node in resource.body if isinstance(node, (ast.Message, ast.Term))}
+    return {
+        entry_id(node): node for node in resource.body if isinstance(node, (ast.Message, ast.Term))
+    }
 
 
 def serialize_resource(resource) -> str:
@@ -177,8 +182,11 @@ def serialize_entry(entry) -> str:
 
 
 def visible_parts(entry) -> list[str]:
-    return [pattern_text(pattern) for pattern in ([entry.value] if entry.value else []) +
-            [attribute.value for attribute in entry.attributes]]
+    return [
+        pattern_text(pattern)
+        for pattern in ([entry.value] if entry.value else [])
+        + [attribute.value for attribute in entry.attributes]
+    ]
 
 
 def pattern_text(node) -> str:
@@ -203,24 +211,33 @@ def structural_signature(node, technical: bool = False):
         return ("TextElement",)
     if isinstance(node, ast.StringLiteral) and not technical:
         value = node.parse()["value"]
-        return ("StringLiteral", "<text>" if any(character.isalpha() for character in value) else value)
+        return (
+            "StringLiteral",
+            "<text>" if any(character.isalpha() for character in value) else value,
+        )
     if isinstance(node, list):
         return [structural_signature(value, technical) for value in node]
     if isinstance(node, ast.BaseNode):
-        return (type(node).__name__, {key: structural_signature(value, technical or key == "arguments")
-                for key, value in vars(node).items() if key != "span"})
+        return (
+            type(node).__name__,
+            {
+                key: structural_signature(value, technical or key == "arguments")
+                for key, value in vars(node).items()
+                if key != "span"
+            },
+        )
     return node
 
 
 def assert_structure(source, target) -> None:
     if structural_signature(source) != structural_signature(target):
-        raise FluentSyntaxError("ИИ изменил структуру FTL, ключи, атрибуты, ссылки, аргументы или комментарии")
+        raise FluentSyntaxError(
+            "ИИ изменил структуру FTL, ключи, атрибуты, ссылки, аргументы или комментарии"
+        )
 
 
 MESSAGE_START_RE = re.compile(r"^(?P<id>-?[A-Za-z][A-Za-z0-9_-]*)\s*=")
-VARIABLE_RE = re.compile(r"\{\s*\$([A-Za-z][A-Za-z0-9_-]*)")
 ATTRIBUTE_RE = re.compile(r"^\s+\.([A-Za-z][A-Za-z0-9_-]*)\s*=", re.MULTILINE)
-FUNCTION_RE = re.compile(r"\{\s*([A-Z][A-Z0-9_-]*)\s*\(")
 RICH_TAG_RE = re.compile(r"(?<!\\)\[(\/?)([A-Za-z][A-Za-z0-9_-]*)(?:[^\]]*)\]")
 RICH_TAG_NAMES = {
     "bold",
@@ -267,9 +284,16 @@ def parse_messages(text: str, resource=None) -> list[FluentMessage]:
         resource = parse_resource(text)
     result = []
     for key, node in entries(resource).items():
-        start = text[:node.span.start].count("\n")
-        end = text[:node.span.end].count("\n") + 1
-        result.append(FluentMessage(key, start, end, tuple(text[node.span.start:node.span.end].splitlines())))
+        start = text[: node.span.start].count("\n")
+        end = text[: node.span.end].count("\n") + 1
+        result.append(
+            FluentMessage(
+                key,
+                start,
+                end,
+                tuple(text[node.span.start : node.span.end].splitlines()),
+            )
+        )
     return result
 
 
@@ -343,25 +367,12 @@ def _is_pattern_assignment(line: str) -> bool:
     return MESSAGE_START_RE.match(line) is not None or ATTRIBUTE_RE.match(line) is not None
 
 
-def variables(text: str) -> set[str]:
-    return set(VARIABLE_RE.findall(text))
-
-
-def attributes(text: str) -> set[str]:
-    return set(ATTRIBUTE_RE.findall(text))
-
-
-def functions(text: str) -> set[str]:
-    return set(FUNCTION_RE.findall(text))
-
-
 def rich_tags(text: str) -> Counter[str]:
-    return Counter(match.group(0) for match in RICH_TAG_RE.finditer(text)
-                   if match.group(2).lower() in RICH_TAG_NAMES)
-
-
-def strip_rich_tags(text: str) -> str:
-    return RICH_TAG_RE.sub(" ", text)
+    return Counter(
+        match.group(0)
+        for match in RICH_TAG_RE.finditer(text)
+        if match.group(2).lower() in RICH_TAG_NAMES
+    )
 
 
 def same_message_payload(left: FluentMessage, right: FluentMessage) -> bool:
@@ -381,7 +392,9 @@ def render_pattern(prefix: str, value: str) -> list[str]:
     return [prefix] + [f"    {line}" for line in lines]
 
 
-def render_entity_message(message_id: str, name: str | None, description: str | None, suffix: str | None) -> str:
+def render_entity_message(
+    message_id: str, name: str | None, description: str | None, suffix: str | None
+) -> str:
     lines: list[str] = []
     lines.extend(render_pattern(f"{message_id} =", name or ""))
 
@@ -399,51 +412,3 @@ def escape_leading_multiline_markup(value: str) -> str:
         return value
 
     return "\n".join(escape_leading_markup_line(line) for line in value.split("\n"))
-
-
-def normalize_entity_message_style(text: str) -> str:
-    parsed = parse_messages(text)
-    if len(parsed) != 1 or not parsed[0].id.startswith("ent-"):
-        return text
-
-    lines = list(parsed[0].lines)
-    if lines:
-        lines[0] = _replace_assignment_value(lines[0], _entity_name)
-
-    for index, line in enumerate(lines):
-        if re.match(r"^\s+\.(?:desc|suffix)\s*=", line):
-            lines[index] = _replace_assignment_value(line, _capitalize_value)
-
-    return "\n".join(lines)
-
-
-def _replace_assignment_value(line: str, transform: Callable[[str], str]) -> str:
-    if "=" not in line:
-        return line
-
-    prefix, value = line.split("=", 1)
-    separator = " " if value.startswith(" ") else ""
-    stripped = value[1:] if value.startswith(" ") else value
-    return f"{prefix}={separator}{transform(stripped)}".rstrip()
-
-
-def _entity_name(value: str) -> str:
-    if _starts_with_fluent_syntax(value):
-        return value
-
-    return value.lower()
-
-
-def _capitalize_value(value: str) -> str:
-    if _starts_with_fluent_syntax(value):
-        return value
-
-    for index, char in enumerate(value):
-        if char.isalpha():
-            return value[:index] + char.upper() + value[index + 1:]
-
-    return value
-
-
-def _starts_with_fluent_syntax(value: str) -> bool:
-    return value.lstrip().startswith(("{", "["))

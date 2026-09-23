@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-from pathlib import Path
 import argparse
 import os
 import sys
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -38,7 +37,6 @@ if _env_args.env_file is not None and not _env_args.env_file.is_file():
 _load_env(_env_args.env_file or ROOT / ".env")
 
 from ss14_localization.cli import main
-
 
 if __name__ == "__main__":
     try:

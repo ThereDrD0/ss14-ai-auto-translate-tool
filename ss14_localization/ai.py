@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 import os
 import sys
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
 
 from .dependencies import import_or_install
-
 
 DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:8000/v1"
 DEFAULT_LOCAL_MODEL = "gpt-5.6-luna"
@@ -41,10 +41,12 @@ class AiConfig:
     max_output_tokens: int = 128000
 
     @classmethod
-    def from_env(cls) -> "AiConfig":
+    def from_env(cls) -> AiConfig:
         base_urls = [
             _normalize_base_url(base_url)
-            for base_url in _split_secret_list(os.environ.get("TRANSLATE_AI_BASE_URL", DEFAULT_LOCAL_BASE_URL))
+            for base_url in _split_secret_list(
+                os.environ.get("TRANSLATE_AI_BASE_URL", DEFAULT_LOCAL_BASE_URL)
+            )
         ]
         models = _split_secret_list(os.environ.get("TRANSLATE_AI_MODEL", DEFAULT_LOCAL_MODEL))
         keys = _split_secret_list(os.environ.get("TRANSLATE_AI_KEYS", ""))
@@ -60,7 +62,9 @@ class AiConfig:
             else:
                 raise ValueError("TRANSLATE_AI_KEYS must contain at least one key.")
 
-        endpoint_count = max(len(base_urls), len(models), len(keys), len(proxies) if proxies else 0)
+        endpoint_count = max(
+            len(base_urls), len(models), len(keys), len(proxies) if proxies else 0
+        )
         endpoints = tuple(
             AiEndpoint(
                 base_url=base_urls[index % len(base_urls)],
@@ -78,14 +82,24 @@ class AiConfig:
             max_attempts=int(os.environ.get("TRANSLATE_AI_MAX_ATTEMPTS", "0")),
             max_output_tokens=int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "128000")),
         )
-        if config.timeout_seconds <= 0 or config.cooldown_seconds < 0 or config.max_attempts < 0 or config.max_output_tokens < 64:
+        if (
+            config.timeout_seconds <= 0
+            or config.cooldown_seconds < 0
+            or config.max_attempts < 0
+            or config.max_output_tokens < 64
+        ):
             raise ValueError("Некорректные таймаут, ожидание, число попыток или окно ответа")
         return config
 
 
 class OpenAICompatibleClient:
-    def __init__(self, config: AiConfig, on_usage: Callable[[int, int, bool], None] | None = None,
-                 quiet: bool = False, on_retry: Callable | None = None):
+    def __init__(
+        self,
+        config: AiConfig,
+        on_usage: Callable[[int, int, bool], None] | None = None,
+        quiet: bool = False,
+        on_retry: Callable | None = None,
+    ):
         self._config = config
         self._on_usage = on_usage
         self._on_retry = on_retry
@@ -94,7 +108,12 @@ class OpenAICompatibleClient:
         self._endpoint_index = 0
         self._httpx = import_or_install("httpx", "httpx>=0.27,<1")
 
-    async def chat(self, messages: list[dict[str, str]], temperature: float = 0.1, retry: bool = False) -> str:
+    async def chat(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.1,
+        retry: bool = False,
+    ) -> str:
         attempts = 0
         last_error: Exception | None = None
 
@@ -111,15 +130,23 @@ class OpenAICompatibleClient:
                 self._handle_retry(endpoint, attempts, error)
                 last_error = error
 
-        raise RuntimeError(f"Перевод ИИ не удался после {attempts} попыток. Последняя ошибка: {last_error}") from last_error
+        raise RuntimeError(
+            f"Перевод ИИ не удался после {attempts} попыток. Последняя ошибка: {last_error}"
+        ) from last_error
 
     def _handle_retry(self, endpoint: AiEndpoint, attempts: int, error: Exception) -> None:
         max_attempts = self._config.max_attempts
         will_retry = max_attempts <= 0 or attempts < max_attempts
         max_attempts_text = "∞" if max_attempts <= 0 else str(max_attempts)
         if self._on_retry:
-            self._on_retry("request", attempts, max_attempts, error,
-                           self._config.cooldown_seconds if will_retry else 0, will_retry)
+            self._on_retry(
+                "request",
+                attempts,
+                max_attempts,
+                error,
+                self._config.cooldown_seconds if will_retry else 0,
+                will_retry,
+            )
 
         if not self._quiet:
             print(
@@ -146,7 +173,13 @@ class OpenAICompatibleClient:
 
             await asyncio.sleep(1)
 
-    async def _send(self, endpoint: AiEndpoint, messages: list[dict[str, str]], temperature: float, retry: bool = False) -> str:
+    async def _send(
+        self,
+        endpoint: AiEndpoint,
+        messages: list[dict[str, str]],
+        temperature: float,
+        retry: bool = False,
+    ) -> str:
         headers = {
             "Authorization": f"Bearer {endpoint.api_key}",
             "Content-Type": "application/json",
@@ -157,10 +190,14 @@ class OpenAICompatibleClient:
         else:
             payload["temperature"] = temperature
         if self._config.max_output_tokens > 0:
-            field = os.environ.get("TRANSLATE_AI_TOKEN_LIMIT_FIELD",
-                                   "max_completion_tokens" if endpoint.model == "gpt-5.6-luna" else "max_tokens")
+            field = os.environ.get(
+                "TRANSLATE_AI_TOKEN_LIMIT_FIELD",
+                "max_completion_tokens" if endpoint.model == "gpt-5.6-luna" else "max_tokens",
+            )
             if field not in {"max_tokens", "max_completion_tokens"}:
-                raise ValueError("TRANSLATE_AI_TOKEN_LIMIT_FIELD: max_tokens или max_completion_tokens")
+                raise ValueError(
+                    "TRANSLATE_AI_TOKEN_LIMIT_FIELD: max_tokens или max_completion_tokens"
+                )
             payload[field] = self._config.max_output_tokens
 
         url = f"{endpoint.base_url}/chat/completions"
@@ -173,7 +210,9 @@ class OpenAICompatibleClient:
             ) as client:
                 response = await client.post(url, headers=headers, json=payload)
         except self._httpx.HTTPError as error:
-            raise TransientAiError(f"Сбой запроса к серверу ИИ: {error.__class__.__name__}") from None
+            raise TransientAiError(
+                f"Сбой запроса к серверу ИИ: {error.__class__.__name__}"
+            ) from None
 
         if response.status_code == 429:
             raise RateLimitedError("Сервер ИИ ограничил частоту запросов (429).")
@@ -188,11 +227,16 @@ class OpenAICompatibleClient:
             data = response.json()
             usage = data.get("usage") or {}
             if self._on_usage and isinstance(usage, dict):
-                prompt_tokens, completion_tokens = usage.get("prompt_tokens"), usage.get("completion_tokens")
+                prompt_tokens, completion_tokens = (
+                    usage.get("prompt_tokens"),
+                    usage.get("completion_tokens"),
+                )
                 if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
                     self._on_usage(prompt_tokens, completion_tokens, retry)
             if data["choices"][0].get("finish_reason") == "length":
-                raise ResponseTruncatedError("ИИ обрезал ответ по пределу выходного окна; блок будет уменьшен")
+                raise ResponseTruncatedError(
+                    "ИИ обрезал ответ по пределу выходного окна; блок будет уменьшен"
+                )
             content = data["choices"][0]["message"]["content"]
         except (ValueError, KeyError, IndexError, TypeError):
             raise TransientAiError(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 TOOL_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT_ENV = "SS14_REPO_ROOT"
 
@@ -52,8 +51,7 @@ def _validate_repo_root(path: Path) -> Path:
     resolved = path.expanduser().resolve()
     if not _looks_like_repo_root(resolved):
         raise RepositoryNotFoundError(
-            f"{resolved} не похож на корень Space Station 14: "
-            "не найдена папка Resources/Locale."
+            f"{resolved} не похож на корень Space Station 14: не найдена папка Resources/Locale."
         )
     return resolved
 

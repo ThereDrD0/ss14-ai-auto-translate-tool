@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-from contextvars import ContextVar
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import re
 import sys
+from contextvars import ContextVar
+from dataclasses import dataclass
+from pathlib import Path
 
 from .ai import AiConfig, OpenAICompatibleClient, ResponseTruncatedError
 from .budget import OutputBudget
 from .filesystem import read_text, write_text_if_changed
-from .fluent import (FluentMessage, assert_structure, entries, entry_id, message_map, parse_resource,
-                     rich_tags, serialize_entry, serialize_resource, syntax, visible_parts)
+from .fluent import (
+    FluentMessage,
+    assert_structure,
+    entries,
+    entry_id,
+    message_map,
+    parse_resource,
+    serialize_entry,
+    serialize_resource,
+    syntax,
+    visible_parts,
+)
 from .language import LanguageChecker, PassList, load_pass_list
-
 
 _current_file = ContextVar("translation_file", default=None)
 
@@ -44,31 +53,49 @@ class TranslationValidationError(ValueError):
 class TranslationFileError(RuntimeError):
     def __init__(self, path, translated_messages, changed, error):
         super().__init__(f"{path}: {error}")
-        self.path, self.translated_messages, self.changed, self.error = path, translated_messages, changed, error
+        self.path, self.translated_messages, self.changed, self.error = (
+            path,
+            translated_messages,
+            changed,
+            error,
+        )
 
 
-def build_translation_prompt(prompt_path, glossary_path=None, source_culture="en-US", target_culture="ru-RU",
-                             pass_list=None):
+def build_translation_prompt(
+    prompt_path,
+    glossary_path=None,
+    source_culture="en-US",
+    target_culture="ru-RU",
+    pass_list=None,
+):
     prompt = read_text(prompt_path)
     prompt = prompt.replace("{{SOURCE}}", source_culture).replace("{{TARGET}}", target_culture)
     if glossary_path is not None:
         if not glossary_path.is_file():
             raise FileNotFoundError(glossary_path)
-        prompt += "\n\nСловарь терминов (используйте нужное направление перевода, не подменяйте целевой язык):\n"
+        prompt += (
+            "\n\nСловарь терминов (используйте нужное направление перевода, "
+            "не подменяйте целевой язык):\n"
+        )
         prompt += read_text(glossary_path)
     if pass_list and pass_list.terms:
         prompt += "\n\nНазвания из pass-листа сохраняйте дословно и с исходным регистром:\n"
         prompt += "\n".join(pass_list.terms)
-    prompt += (f"\n\nИсходный язык: {source_culture}. Целевой язык: {target_culture}. "
-               "Верните только обычный текст FTL, без JSON, пояснений и ограждений Markdown. "
-               "Сохраните ключи, атрибуты, комментарии, ссылки, переменные, функции, варианты выбора, "
-               "параметры разметки и названия из pass-листа. Не переписывайте уже переведённые части.")
+    prompt += (
+        f"\n\nИсходный язык: {source_culture}. Целевой язык: {target_culture}. "
+        "Верните только обычный текст FTL, без JSON, пояснений и ограждений Markdown. "
+        "Сохраните ключи, атрибуты, комментарии, ссылки, переменные, функции, варианты выбора, "
+        "параметры разметки и названия из pass-листа. Не переписывайте уже переведённые части."
+    )
     return prompt
 
 
-def _split_messages(text, source_text, target_culture, checker=None):
-    checker = checker or LanguageChecker("ru-RU" if target_culture.startswith("en") else "en-US",
-                                         target_culture, load_pass_list())
+def _split_messages(text, target_culture, checker=None):
+    checker = checker or LanguageChecker(
+        "ru-RU" if target_culture.startswith("en") else "en-US",
+        target_culture,
+        load_pass_list(),
+    )
     resource = parse_resource(text)
     nodes = entries(resource)
     pending, completed = [], []
@@ -77,16 +104,14 @@ def _split_messages(text, source_text, target_culture, checker=None):
     return pending, completed
 
 
-def _messages_to_translate(text, source_text, target_culture, checker=None):
-    return _split_messages(text, source_text, target_culture, checker)[0]
-
-
 def _chunks(messages, chunk_size, budget=None, prompt=""):
     budget = budget or OutputBudget.from_env()
     result, current = [], []
     for message in messages:
         joined = "\n\n".join(item.text for item in [*current, message])
-        if current and ((chunk_size > 0 and len(joined) > chunk_size) or not budget.fits(joined, prompt)):
+        if current and (
+            (chunk_size > 0 and len(joined) > chunk_size) or not budget.fits(joined, prompt)
+        ):
             result.append(current)
             current = []
         current.append(message)
@@ -99,7 +124,7 @@ def _strip_fence(response):
     # ponytail: убираем только вводные блоки рассуждений, не теги внутри FTL-значений.
     def strip_thoughts(text):
         while match := re.match(r"(?is)\A<think(?:\s[^>]*)?>.*?</think\s*>\s*", text):
-            text = text[match.end():]
+            text = text[match.end() :]
         return text
 
     text = strip_thoughts(response.strip())
@@ -117,24 +142,43 @@ def _validate_translated_message(source, translated, checker=None, pass_list=Non
     visible_text = []
     for key in source_nodes:
         source_node, target_node = source_nodes[key], target_nodes[key]
-        source_patterns = ([source_node.value] if source_node.value else []) + [a.value for a in source_node.attributes]
-        target_patterns = ([target_node.value] if target_node.value else []) + [a.value for a in target_node.attributes]
+        source_patterns = ([source_node.value] if source_node.value else []) + [
+            a.value for a in source_node.attributes
+        ]
+        target_patterns = ([target_node.value] if target_node.value else []) + [
+            a.value for a in target_node.attributes
+        ]
         if checker:
             from .fluent import pattern_text
-            for original, translated in zip(source_patterns, target_patterns):
+
+            for original, target_pattern in zip(source_patterns, target_patterns):
                 original_text = pattern_text(original)
                 if checker.ratio(original_text) >= checker.minimum_ratio:
-                    changed = (checker.pass_list.normalize_plurals(original_text) != pattern_text(translated)
-                               if checker.pass_list.needs_normalization(original_text)
-                               else not original.equals(translated, ignored_fields=["span"]))
+                    changed = (
+                        checker.pass_list.normalize_plurals(original_text)
+                        != pattern_text(target_pattern)
+                        if checker.pass_list.needs_normalization(original_text)
+                        else not original.equals(target_pattern, ignored_fields=["span"])
+                    )
                     if changed:
-                        raise TranslationValidationError(f"ИИ переписал уже переведённое или разрешённое поле для {key}")
+                        raise TranslationValidationError(
+                            f"ИИ переписал уже переведённое или разрешённое поле для {key}"
+                        )
         source_text = "\n".join(visible_parts(source_nodes[key]))
         target_text = "\n".join(visible_parts(target_nodes[key]))
         visible_text.append(target_text)
-        from .fluent import RICH_TAG_RE, RICH_TAG_NAMES
-        source_tags = [m.group(0) for m in RICH_TAG_RE.finditer(source_text) if m.group(2).lower() in RICH_TAG_NAMES]
-        target_tags = [m.group(0) for m in RICH_TAG_RE.finditer(target_text) if m.group(2).lower() in RICH_TAG_NAMES]
+        from .fluent import RICH_TAG_NAMES, RICH_TAG_RE
+
+        source_tags = [
+            m.group(0)
+            for m in RICH_TAG_RE.finditer(source_text)
+            if m.group(2).lower() in RICH_TAG_NAMES
+        ]
+        target_tags = [
+            m.group(0)
+            for m in RICH_TAG_RE.finditer(target_text)
+            if m.group(2).lower() in RICH_TAG_NAMES
+        ]
         if source_tags != target_tags:
             raise TranslationValidationError(f"ИИ изменил rich-text-разметку для {key}")
         angle_tags = r"</?[^>]+>"
@@ -157,13 +201,16 @@ def _parse_translation_response(response, expected, target_culture=None, checker
     if set(received) != set(expected):
         raise TranslationValidationError(
             f"Ключи ответа не совпадают: отсутствуют {sorted(set(expected) - set(received))}; "
-            f"лишние {sorted(set(received) - set(expected))}")
+            f"лишние {sorted(set(received) - set(expected))}"
+        )
     source_text = "\n\n".join(message.text for message in expected.values())
     _validate_translated_message(source_text, text, checker)
     return {key: serialize_entry(received[key]).rstrip("\n") for key in expected}
 
 
-async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, budget=None, context=()):
+async def _translate_chunk(
+    client, prompt, chunk, target_culture, checker=None, budget=None, context=()
+):
     budget = budget or OutputBudget.from_env()
     payload = "\n\n".join(message.text for message in chunk)
     protected = []
@@ -172,10 +219,14 @@ async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, 
             node = entries(parse_resource(message.text))[message.id]
             terms = checker.pass_list.required("\n".join(visible_parts(node)))
             if terms:
-                protected.append(f"{message.id}: {', '.join(repr(term) for term in terms.elements())}")
+                protected.append(
+                    f"{message.id}: {', '.join(repr(term) for term in terms.elements())}"
+                )
     if protected:
-        prompt += ("\n\nВ этом блоке сохраните в значениях указанных ключей следующие написания "
-                   "дословно, с исходным регистром и числом повторений:\n" + "\n".join(protected))
+        prompt += (
+            "\n\nВ этом блоке сохраните в значениях указанных ключей следующие написания "
+            "дословно, с исходным регистром и числом повторений:\n" + "\n".join(protected)
+        )
     if not budget.fits(payload, prompt):
         raise ResponseTruncatedError("Блок не помещается в заданный бюджет ответа/контекста")
     expected = {message.id: message for message in chunk}
@@ -188,23 +239,45 @@ async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, 
     index = 0
     while attempts == 0 or index < attempts:
         index += 1
-        messages = [{"role": "system", "content": prompt}, {"role": "user", "content": payload}]
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": payload},
+        ]
         if last_error is not None:
-            feedback = f"Предыдущая попытка не прошла проверку: {last_error}. Исправьте ошибку и верните полный FTL-блок."
+            feedback = (
+                f"Предыдущая попытка не прошла проверку: {last_error}. "
+                "Исправьте ошибку и верните полный FTL-блок."
+            )
             messages.append({"role": "user", "content": feedback})
         if context:
-            heading = "Примеры уже переведённых ключей. Используйте как контекст и не возвращайте в ответ:\n"
+            heading = (
+                "Примеры уже переведённых ключей. Используйте как контекст "
+                "и не возвращайте в ответ:\n"
+            )
             examples = ""
-            remaining = (budget.max_input_tokens - budget.reserve -
-                         sum(budget.tokens(item["content"]) for item in messages)) if budget.max_input_tokens else None
+            remaining = (
+                (
+                    budget.max_input_tokens
+                    - budget.reserve
+                    - sum(budget.tokens(item["content"]) for item in messages)
+                )
+                if budget.max_input_tokens
+                else None
+            )
             for item in context:
                 candidate = f"{examples}\n\n{item.text}" if examples else item.text
                 if remaining is None or budget.tokens(heading + candidate) <= remaining:
                     examples = candidate
             if examples:
                 messages.insert(1, {"role": "user", "content": heading + examples})
-        if budget.max_input_tokens and sum(budget.tokens(item["content"]) for item in messages) + budget.reserve > budget.max_input_tokens:
-            raise ResponseTruncatedError("Источник, подсказка и обратная связь не помещаются в контекст")
+        if (
+            budget.max_input_tokens
+            and sum(budget.tokens(item["content"]) for item in messages) + budget.reserve
+            > budget.max_input_tokens
+        ):
+            raise ResponseTruncatedError(
+                "Источник, подсказка и обратная связь не помещаются в контекст"
+            )
         if getattr(client, "_supports_retry", False):
             response = await client.chat(messages, retry=index > 1)
         else:
@@ -217,11 +290,22 @@ async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, 
         except ValueError as error:
             last_error, last_response = error, response
             if getattr(client, "_on_retry", None):
-                client._on_retry("validation", index, attempts, error,
-                                 cooldown if attempts == 0 or index < attempts else 0,
-                                 attempts == 0 or index < attempts, payload, response)
+                client._on_retry(
+                    "validation",
+                    index,
+                    attempts,
+                    error,
+                    cooldown if attempts == 0 or index < attempts else 0,
+                    attempts == 0 or index < attempts,
+                    payload,
+                    response,
+                )
             if not getattr(client, "_quiet", False):
-                print(f"Повтор проверки {index}/{attempts or '∞'}: {error}", file=sys.stderr, flush=True)
+                print(
+                    f"Повтор проверки {index}/{attempts or '∞'}: {error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if attempts == 0 or index < attempts:
                 await asyncio.sleep(cooldown)
     raise TranslationValidationError(str(last_error), last_response) from last_error
@@ -229,7 +313,9 @@ async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, 
 
 def _text_slots(node, technical=False):
     ast = syntax().ast
-    if isinstance(node, ast.TextElement) or (isinstance(node, ast.StringLiteral) and not technical and node.value):
+    if isinstance(node, ast.TextElement) or (
+        isinstance(node, ast.StringLiteral) and not technical and node.value
+    ):
         yield node
     elif isinstance(node, ast.BaseNode):
         for key, value in vars(node).items():
@@ -244,6 +330,7 @@ def _fragment_node(text):
     ast = syntax().ast
     # Escaping leading rich-text lines is owned by the program, not by the model.
     from .fluent import escape_leading_multiline_markup
+
     elements = []
     for part in re.split(r"([{}])", escape_leading_multiline_markup(text)):
         if part in {"{", "}"}:
@@ -258,7 +345,12 @@ def _slot_text(slot):
 
 
 def _literal_value(text):
-    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", r"\u000A").replace("\r", r"\u000D")
+    return (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", r"\u000A")
+        .replace("\r", r"\u000D")
+    )
 
 
 async def _translate_large_message(message, client, prompt, checker, budget, depth=0, context=()):
@@ -268,29 +360,51 @@ async def _translate_large_message(message, client, prompt, checker, budget, dep
     result_node = source_node.clone()
     for original, translated in zip(_text_slots(source_node), _text_slots(result_node)):
         original_text = _slot_text(original)
-        if checker.ratio(original_text) >= checker.minimum_ratio and not checker.pass_list.needs_normalization(original_text):
+        if checker.ratio(
+            original_text
+        ) >= checker.minimum_ratio and not checker.pass_list.needs_normalization(original_text):
             continue
         render = lambda value: serialize_entry(_fragment_node(value))
         pieces = budget.split_text(original_text, render, prompt, checker.pass_list.pattern)
         translated_pieces = []
         for piece in pieces:
-            leading = piece[:len(piece) - len(piece.lstrip())]
-            trailing = piece[len(piece.rstrip()):]
+            leading = piece[: len(piece) - len(piece.lstrip())]
+            trailing = piece[len(piece.rstrip()) :]
             raw = render(piece.strip())
             part = next(iter(message_map(raw).values()))
             try:
-                response = await _translate_chunk(client, prompt, [part], checker.target_culture, checker, budget, context)
+                response = await _translate_chunk(
+                    client,
+                    prompt,
+                    [part],
+                    checker.target_culture,
+                    checker,
+                    budget,
+                    context,
+                )
                 node = next(iter(entries(parse_resource(response[part.id])).values()))
                 from .fluent import pattern_text
+
                 value = pattern_text(node.value)
                 translated_pieces.append(leading + value.strip() + trailing)
             except ResponseTruncatedError as error:
                 if getattr(client, "_on_retry", None):
                     client._on_retry("split", 0, 0, error, 0, True)
-                translated_pieces.append(await _translate_fragment_again(piece, client, prompt, checker,
-                                                                         budget.smaller(), depth + 1, context))
+                translated_pieces.append(
+                    await _translate_fragment_again(
+                        piece,
+                        client,
+                        prompt,
+                        checker,
+                        budget.smaller(),
+                        depth + 1,
+                        context,
+                    )
+                )
         value = "".join(translated_pieces)
-        translated.value = _literal_value(value) if isinstance(translated, syntax().ast.StringLiteral) else value
+        translated.value = (
+            _literal_value(value) if isinstance(translated, syntax().ast.StringLiteral) else value
+        )
     result = serialize_entry(result_node).rstrip("\n")
     _validate_translated_message(message, result, checker)
     return {message.id: result}
@@ -299,25 +413,34 @@ async def _translate_large_message(message, client, prompt, checker, budget, dep
 async def _translate_fragment_again(piece, client, prompt, checker, budget, depth, context=()):
     raw = serialize_entry(_fragment_node(piece))
     message = next(iter(message_map(raw).values()))
-    response = await _translate_large_message(message, client, prompt, checker, budget, depth, context)
+    response = await _translate_large_message(
+        message, client, prompt, checker, budget, depth, context
+    )
     from .fluent import pattern_text
+
     value = pattern_text(next(iter(entries(parse_resource(response[message.id])).values())).value)
-    leading = piece[:len(piece) - len(piece.lstrip())]
-    trailing = piece[len(piece.rstrip()):]
+    leading = piece[: len(piece) - len(piece.lstrip())]
+    trailing = piece[len(piece.rstrip()) :]
     return leading + value.strip() + trailing
 
 
 async def _safe_chunk(client, prompt, chunk, checker, budget, context=()):
     payload = "\n\n".join(message.text for message in chunk)
     if len(chunk) == 1 and not budget.fits(payload, prompt):
-        return await _translate_large_message(chunk[0], client, prompt, checker, budget, context=context)
+        return await _translate_large_message(
+            chunk[0], client, prompt, checker, budget, context=context
+        )
     try:
-        return await _translate_chunk(client, prompt, chunk, checker.target_culture, checker, budget, context)
+        return await _translate_chunk(
+            client, prompt, chunk, checker.target_culture, checker, budget, context
+        )
     except ResponseTruncatedError as error:
         if getattr(client, "_on_retry", None):
             client._on_retry("split", 0, 0, error, 0, True)
         if len(chunk) == 1:
-            return await _translate_large_message(chunk[0], client, prompt, checker, budget.smaller(), context=context)
+            return await _translate_large_message(
+                chunk[0], client, prompt, checker, budget.smaller(), context=context
+            )
         middle = len(chunk) // 2
         first = await _safe_chunk(client, prompt, chunk[:middle], checker, budget, context)
         first.update(await _safe_chunk(client, prompt, chunk[middle:], checker, budget, context))
@@ -351,24 +474,51 @@ def _unpack_message(text, original_id):
     return serialize_entry(node).rstrip("\n")
 
 
-async def translate_file(path, client, prompt, chunk_size, source_text=None, target_culture=None,
-                         *, allow_partial=False, dry_run=False, checker=None, budget=None, text=None,
-                         messages=None, context=None, save_tokens=True):
+async def translate_file(
+    path,
+    client,
+    prompt,
+    chunk_size,
+    target_culture=None,
+    *,
+    allow_partial=False,
+    dry_run=False,
+    checker=None,
+    budget=None,
+    text=None,
+    messages=None,
+    context=None,
+    save_tokens=True,
+):
     text = read_text(path) if text is None else text
-    checker = checker or LanguageChecker("en-US", target_culture, load_pass_list())
+    if checker is None:
+        if target_culture is None:
+            raise ValueError("Укажите целевой язык перевода")
+        checker = LanguageChecker("en-US", target_culture, load_pass_list())
     budget = budget or OutputBudget.from_env()
     if messages is None or context is None:
-        found, examples = _split_messages(text, source_text, target_culture, checker)
+        found, examples = _split_messages(text, target_culture, checker)
         messages = found if messages is None else messages
         context = examples if context is None else context
     replacements = {}
     changed = False
     for chunk in _chunks(messages, chunk_size, budget, prompt):
         try:
-            replacements.update(await _safe_chunk(client, prompt, chunk, checker, budget,
-                                                  () if save_tokens else context))
+            replacements.update(
+                await _safe_chunk(
+                    client,
+                    prompt,
+                    chunk,
+                    checker,
+                    budget,
+                    () if save_tokens else context,
+                )
+            )
             if allow_partial:
-                changed = write_text_if_changed(path, _replace_messages(text, replacements), dry_run) or changed
+                changed = (
+                    write_text_if_changed(path, _replace_messages(text, replacements), dry_run)
+                    or changed
+                )
         except Exception as error:
             raise TranslationFileError(path, len(replacements), changed, error) from error
     if replacements and not allow_partial:
@@ -376,11 +526,29 @@ async def translate_file(path, client, prompt, chunk_size, source_text=None, tar
     return len(replacements), changed
 
 
-async def translate_files(files, prompt, chunk_size, source_texts=None, target_culture=None, concurrency=2,
-                          *, allow_partial=False, dry_run=False, checker=None, budget=None, texts=None,
-                          on_event=None, on_usage=None, on_retry=None, ai_config=None, save_tokens=True,
-                          plans=None):
-    checker = checker or LanguageChecker("en-US", target_culture, load_pass_list())
+async def translate_files(
+    files,
+    prompt,
+    chunk_size,
+    target_culture=None,
+    concurrency=2,
+    *,
+    allow_partial=False,
+    dry_run=False,
+    checker=None,
+    budget=None,
+    texts=None,
+    on_event=None,
+    on_usage=None,
+    on_retry=None,
+    ai_config=None,
+    save_tokens=True,
+    plans=None,
+):
+    if checker is None:
+        if target_culture is None:
+            raise ValueError("Укажите целевой язык перевода")
+        checker = LanguageChecker("en-US", target_culture, load_pass_list())
     budget = budget or OutputBudget.from_env()
     pending, failures = [], []
     texts = texts or {}
@@ -398,16 +566,20 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
                 text, messages, context = plans[path]
             else:
                 text = texts[path] if path in texts else read_text(path)
-                messages, context = _split_messages(text, (source_texts or {}).get(path), target_culture, checker)
+                messages, context = _split_messages(text, target_culture, checker)
             if not messages:
                 if on_event:
                     on_event("skipped", path, {})
                 continue
             pending.append((path, text, messages, context))
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 — ошибка чтения одного файла не должна прерывать остальные.
             failures.append(TranslationFailure(path, 0, False, str(error)))
             if on_event:
-                on_event("failed", path, {"error": str(error), "source": text, "response": None})
+                on_event(
+                    "failed",
+                    path,
+                    {"error": str(error), "source": text, "response": None},
+                )
     if not pending:
         return TranslationRunResult(0, 0, tuple(item.path for item in failures), tuple(failures))
 
@@ -425,13 +597,19 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
         for index, chunk in enumerate(chunks, 1):
             raw = "\n\n".join(item.text for item in chunk)
             paths = {owners[item.id][0] for item in chunk}
-            print(f"План перевода: блок={index}; файлов={len(paths)}; ключей={len(chunk)}; "
-                  f"оценка ответа={budget.estimated_output(raw)}; безопасное окно={budget.capacity}")
+            print(
+                f"План перевода: блок={index}; файлов={len(paths)}; ключей={len(chunk)}; "
+                f"оценка ответа={budget.estimated_output(raw)}; безопасное окно={budget.capacity}"
+            )
         return TranslationRunResult(0, 0, tuple(item.path for item in failures), tuple(failures))
 
     retry_callback = (lambda *items: on_retry(_current_file.get(), *items)) if on_retry else None
-    client = OpenAICompatibleClient(ai_config or AiConfig.from_env(), on_usage,
-                                    quiet=bool(on_event), on_retry=retry_callback)
+    client = OpenAICompatibleClient(
+        ai_config or AiConfig.from_env(),
+        on_usage,
+        quiet=bool(on_event),
+        on_retry=retry_callback,
+    )
     semaphore = asyncio.Semaphore(concurrency)
 
     for path, _, _, _ in pending:
@@ -448,13 +626,15 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
             try:
                 result = await _safe_chunk(client, prompt, chunk, checker, budget, context)
                 return [(chunk, result, None)]
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 — ошибка запроса или проверки относится к этому блоку.
                 if not isinstance(error, TranslationValidationError) or len(chunk) == 1:
                     return [(chunk, None, error)]
         middle = len(chunk) // 2
         return (await one(chunk[:middle])) + (await one(chunk[middle:]))
 
-    results = [item for group in await asyncio.gather(*(one(chunk) for chunk in chunks)) for item in group]
+    results = [
+        item for group in await asyncio.gather(*(one(chunk) for chunk in chunks)) for item in group
+    ]
     replacements = {path: {} for path, _, _, _ in pending}
     errors = {}
     for chunk, result, error in results:
@@ -462,6 +642,7 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
             for path in {owners[item.id][0] for item in chunk}:
                 errors.setdefault(path, error)
             continue
+        assert result is not None
         for item in chunk:
             path, key = owners[item.id]
             replacements[path][key] = _unpack_message(result[item.id], key)
@@ -475,18 +656,33 @@ async def translate_files(files, prompt, chunk_size, source_texts=None, target_c
                 file_changed = write_text_if_changed(path, _replace_messages(text, completed))
                 translated += len(completed)
                 changed += file_changed
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 — ошибка записи учитывается как ошибка файла.
                 errors[path] = error
         if path in errors:
             error = errors[path]
-            failures.append(TranslationFailure(path, len(completed) if file_changed else 0,
-                                               file_changed, str(error)))
+            failures.append(
+                TranslationFailure(
+                    path,
+                    len(completed) if file_changed else 0,
+                    file_changed,
+                    str(error),
+                )
+            )
             if on_event:
-                on_event("failed", path, {"error": str(error), "source": text,
-                                          "response": getattr(error, "ai_response", None)})
+                on_event(
+                    "failed",
+                    path,
+                    {
+                        "error": str(error),
+                        "source": text,
+                        "response": getattr(error, "ai_response", None),
+                    },
+                )
         elif on_event:
             on_event("completed", path, {"text": read_text(path), "messages": len(completed)})
-    return TranslationRunResult(translated, changed, tuple(item.path for item in failures), tuple(failures))
+    return TranslationRunResult(
+        translated, changed, tuple(item.path for item in failures), tuple(failures)
+    )
 
 
 def run_translate_files(*args, **kwargs):

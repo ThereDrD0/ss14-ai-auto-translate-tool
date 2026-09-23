@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import os
+import re
 from collections import defaultdict
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from hashlib import blake2b
 from itertools import zip_longest
-import json
 from pathlib import Path
-import re
 from threading import Thread
 from time import monotonic
 from types import SimpleNamespace
-import os
+from typing import ClassVar, cast
 
 from .ai import AiConfig, AiEndpoint
-from .constants import DEFAULT_LOCALE_ROOT, DEFAULT_SOURCE_CULTURE, DEFAULT_TARGET_CULTURE
+from .constants import (
+    DEFAULT_LOCALE_ROOT,
+    DEFAULT_SOURCE_CULTURE,
+    DEFAULT_TARGET_CULTURE,
+)
 from .dependencies import import_or_install
 from .filesystem import iter_files, read_text, write_text_if_changed
 from .paths import TOOL_ROOT, find_repo_root
@@ -33,14 +38,19 @@ def _inventory(source_root: Path, target_root: Path):
     target_files = iter_files(target_root, ".ftl")
     fingerprints = {}
     digests = []
-    for label, root, files in (("s", source_root, source_files), ("t", target_root, target_files)):
+    for label, root, files in (
+        ("s", source_root, source_files),
+        ("t", target_root, target_files),
+    ):
         for path in files:
             relative = path.relative_to(root).as_posix()
             digest = _file_hash(path)
             digests.append(f"{label}:{relative}:{digest}")
             if label == "t":
                 fingerprints[relative] = digest
-    source_digest = blake2b("\n".join(digests[:len(source_files)]).encode(), digest_size=16).hexdigest()
+    source_digest = blake2b(
+        "\n".join(digests[: len(source_files)]).encode(), digest_size=16
+    ).hexdigest()
     all_digest = blake2b("\n".join(digests).encode(), digest_size=16).hexdigest()
     return all_digest, source_digest, source_files, fingerprints
 
@@ -67,9 +77,17 @@ def _save_cache(path: Path, data: dict) -> None:
 
 def _checker_key(checker) -> str:
     profile = checker.profile.read_bytes() if checker.profile else b""
-    settings = repr((checker.source_culture, checker.target_culture, checker.minimum_ratio,
-                     checker.pass_list.terms, checker.pass_list.ignored_files,
-                     os.environ.get("TRANSLATE_DETECT_SOURCE"), os.environ.get("TRANSLATE_DETECT_TARGET"))).encode()
+    settings = repr(
+        (
+            checker.source_culture,
+            checker.target_culture,
+            checker.minimum_ratio,
+            checker.pass_list.terms,
+            checker.pass_list.ignored_files,
+            os.environ.get("TRANSLATE_DETECT_SOURCE"),
+            os.environ.get("TRANSLATE_DETECT_TARGET"),
+        )
+    ).encode()
     return blake2b(settings + profile, digest_size=16).hexdigest()
 
 
@@ -94,14 +112,22 @@ def fetch_models(config: AiConfig, on_error=None) -> dict[str, tuple[AiEndpoint,
     errors = []
     for endpoint in config.endpoints:
         try:
-            with httpx.Client(timeout=config.timeout_seconds, proxy=endpoint.proxy, trust_env=False) as client:
-                response = client.get(f"{endpoint.base_url}/models",
-                                      headers={"Authorization": f"Bearer {endpoint.api_key}"})
+            with httpx.Client(
+                timeout=config.timeout_seconds, proxy=endpoint.proxy, trust_env=False
+            ) as client:
+                response = client.get(
+                    f"{endpoint.base_url}/models",
+                    headers={"Authorization": f"Bearer {endpoint.api_key}"},
+                )
                 response.raise_for_status()
                 for item in response.json()["data"]:
-                    if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]:
-                        if endpoint not in found[item["id"]]:
-                            found[item["id"]].append(endpoint)
+                    if (
+                        isinstance(item, dict)
+                        and isinstance(item.get("id"), str)
+                        and item["id"]
+                        and endpoint not in found[item["id"]]
+                    ):
+                        found[item["id"]].append(endpoint)
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as error:
             errors.append(f"{endpoint.base_url}: {error}")
             if on_error:
@@ -111,17 +137,29 @@ def fetch_models(config: AiConfig, on_error=None) -> dict[str, tuple[AiEndpoint,
     return {name: tuple(endpoints) for name, endpoints in sorted(found.items())}
 
 
-def summary_counts(success: int, failures: list, skipped: int, prompt_tokens: int,
-                   completion_tokens: int, retry_tokens: int) -> dict:
+def summary_counts(
+    success: int,
+    failures: list,
+    skipped: int,
+    prompt_tokens: int,
+    completion_tokens: int,
+    retry_tokens: int,
+) -> dict:
     full = sum(item.translated_messages == 0 for item in failures)
     partial = len(failures) - full
     total = success + len(failures)
-    return {"success": success, "full": full, "partial": partial, "skipped": skipped,
-            "success_percent": 100 * success / total if total else 0.0,
-            "tokens": prompt_tokens + completion_tokens,
-            "retry_tokens": retry_tokens,
-            "retry_percent": 100 * retry_tokens / (prompt_tokens + completion_tokens)
-            if prompt_tokens + completion_tokens else 0.0}
+    return {
+        "success": success,
+        "full": full,
+        "partial": partial,
+        "skipped": skipped,
+        "success_percent": 100 * success / total if total else 0.0,
+        "tokens": prompt_tokens + completion_tokens,
+        "retry_tokens": retry_tokens,
+        "retry_percent": 100 * retry_tokens / (prompt_tokens + completion_tokens)
+        if prompt_tokens + completion_tokens
+        else 0.0,
+    }
 
 
 class TokenEta:
@@ -149,9 +187,13 @@ class TokenEta:
             return None
         seconds_per_token = self.sample_seconds / self.sample_tokens
         work = sum(self.weights.values()) * seconds_per_token
-        # ponytail: без прогресса внутри файла вычитаем не больше 80%; поток токенов даст точный остаток.
-        work -= sum(min(now - started, self.weights[path] * seconds_per_token * 0.8)
-                    for path, started in self.started.items() if path in self.weights)
+        # ponytail: без прогресса внутри файла вычитаем не больше 80%;
+        # поток токенов даст точный остаток.
+        work -= sum(
+            min(now - started, self.weights[path] * seconds_per_token * 0.8)
+            for path, started in self.started.items()
+            if path in self.weights
+        )
         return max(0.0, work / min(self.concurrency, len(self.weights)))
 
 
@@ -171,12 +213,18 @@ def _diff_lines(before: str, after: str):
             pieces = re.split(r"(\s+)", value)
             opposite = re.split(r"(\s+)", other)
             changed = set()
-            for operation, start, end, _, _ in SequenceMatcher(None, pieces, opposite, autojunk=False).get_opcodes():
+            for operation, start, end, _, _ in SequenceMatcher(
+                None, pieces, opposite, autojunk=False
+            ).get_opcodes():
                 if operation != "equal":
                     changed.update(range(start, end))
             for index, piece in enumerate(pieces):
-                result.append(piece, style=f"{color} on {'#613434' if mark == '-' else '#285b3c'}"
-                              if index in changed and not piece.isspace() else color)
+                result.append(
+                    piece,
+                    style=f"{color} on {'#613434' if mark == '-' else '#285b3c'}"
+                    if index in changed and not piece.isspace()
+                    else color,
+                )
         rows.append(result)
 
     for operation, a, b, c, d in SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
@@ -202,10 +250,19 @@ def create_app(repo: Path):
     from rich.table import Table
     from rich.text import Text
     from textual.app import App, ComposeResult
-    from textual.binding import Binding
+    from textual.binding import Binding, BindingType
     from textual.containers import Horizontal, Vertical, VerticalScroll
     from textual.screen import ModalScreen
-    from textual.widgets import Button, Checkbox, Header, Input, OptionList, ProgressBar, RichLog, Static
+    from textual.widgets import (
+        Button,
+        Checkbox,
+        Header,
+        Input,
+        OptionList,
+        ProgressBar,
+        RichLog,
+        Static,
+    )
 
     from .cli import _translation_settings
     from .fluent import message_map
@@ -218,17 +275,20 @@ def create_app(repo: Path):
 
     class SaveTokensCheckbox(Checkbox):
         @property
-        def BUTTON_INNER(self) -> str:
+        def BUTTON_INNER(self) -> str:  # pyright: ignore[reportIncompatibleVariableOverride]
             return "✓" if self.value else " "
 
     class TranslationLog(RichLog):
         def on_mouse_down(self, event):
-            self.app._toggle_log_at(int(self.scroll_y + event.y - 1))
+            cast(TranslationApp, self.app)._toggle_log_at(int(self.scroll_y + event.y - 1))
 
     class RetranslatePrompt(ModalScreen):
         CSS = """
         RetranslatePrompt { align: center middle; background: #000000 65%; }
-        #prompt-box { width: 70%; height: 10; padding: 1 2; border: round #83b4c7; background: #18232e; }
+        #prompt-box {
+            width: 70%; height: 10; padding: 1 2;
+            border: round #83b4c7; background: #18232e;
+        }
         #prompt-input { width: 100%; }
         #prompt-send { margin-top: 1; }
         """
@@ -250,19 +310,23 @@ def create_app(repo: Path):
         def on_key(self, event):
             if event.key == "escape":
                 self.dismiss(None)
-            elif event.key == "enter" or (event.key == "space" and isinstance(self.focused, Button)):
+            elif event.key == "enter" or (
+                event.key == "space" and isinstance(self.focused, Button)
+            ):
                 self.dismiss(self.query_one("#prompt-input", Input).value)
                 event.stop()
 
     class TranslationApp(App):
         TITLE = "Перевод локализации SS14"
-        BINDINGS = [Binding("ctrl+c", "quit", "Выход"),
-                    Binding("ctrl+q", "noop", "", show=False, priority=True),
-                    Binding("f2", "toggle_auto_scroll", "Автопрокрутка", priority=True),
-                    Binding("f3", "toggle_save_tokens", "Экономия токенов", priority=True),
-                    Binding("left", "previous_column", "Левая колонка", show=False),
-                    Binding("right", "next_column", "Правая колонка", show=False),
-                    Binding("alt+enter", "show_summary", "Итоги", priority=True)]
+        BINDINGS: ClassVar[list[BindingType]] = [
+            Binding("ctrl+c", "quit", "Выход"),
+            Binding("ctrl+q", "noop", "", show=False, priority=True),
+            Binding("f2", "toggle_auto_scroll", "Автопрокрутка", priority=True),
+            Binding("f3", "toggle_save_tokens", "Экономия токенов", priority=True),
+            Binding("left", "previous_column", "Левая колонка", show=False),
+            Binding("right", "next_column", "Правая колонка", show=False),
+            Binding("alt+enter", "show_summary", "Итоги", priority=True),
+        ]
         CSS = """
         Screen { background: #111821; color: #d4dde7; }
         Header { background: #1c2b39; color: #e6edf4; }
@@ -299,7 +363,9 @@ def create_app(repo: Path):
         def __init__(self):
             super().__init__()
             self.sources, self.targets = sources, targets
-            self.source = DEFAULT_SOURCE_CULTURE if DEFAULT_SOURCE_CULTURE in sources else sources[0]
+            self.source = (
+                DEFAULT_SOURCE_CULTURE if DEFAULT_SOURCE_CULTURE in sources else sources[0]
+            )
             self.target = DEFAULT_TARGET_CULTURE
             self.target_options = []
             self.models = {}
@@ -339,8 +405,11 @@ def create_app(repo: Path):
                 yield Static("Выберите модель из /v1/models", classes="title")
                 yield Static("Загрузка моделей...", id="model-status")
                 yield OptionList(id="model-list")
-                yield SaveTokensCheckbox("Экономить токены: без примеров готового перевода",
-                                         value=True, id="save-tokens")
+                yield SaveTokensCheckbox(
+                    "Экономить токены: без примеров готового перевода",
+                    value=True,
+                    id="save-tokens",
+                )
             with Vertical(id="work"):
                 yield Static("Подготовка", id="stage")
                 yield ProgressBar(total=100, show_eta=False, id="bar")
@@ -357,7 +426,10 @@ def create_app(repo: Path):
                 yield Static("Итоги перевода", classes="title")
                 with VerticalScroll(id="summary-scroll"):
                     yield Static(id="summary-content")
-            yield Static("↑/↓ выбор   Tab/←/→ колонка   Enter подтвердить   Ctrl+C выход", id="hint")
+            yield Static(
+                "↑/↓ выбор   Tab/←/→ колонка   Enter подтвердить   Ctrl+C выход",
+                id="hint",
+            )
 
         def on_mount(self) -> None:
             source_list = self.query_one("#source-list", OptionList)
@@ -368,8 +440,11 @@ def create_app(repo: Path):
 
         def _refresh_targets(self) -> None:
             previous = self.target
-            self.target_options = [name for name in self.targets
-                                   if name.split("-")[0].lower() != self.source.split("-")[0].lower()]
+            self.target_options = [
+                name
+                for name in self.targets
+                if name.split("-")[0].lower() != self.source.split("-")[0].lower()
+            ]
             options = self.query_one("#target-list", OptionList)
             options.set_options(self.target_options)
             self.target = previous if previous in self.target_options else self.target_options[0]
@@ -382,7 +457,9 @@ def create_app(repo: Path):
                     if selected != self.source:
                         self.source = selected
                         self._refresh_targets()
-                elif event.option_list.id == "target-list" and event.option_index < len(self.target_options):
+                elif event.option_list.id == "target-list" and event.option_index < len(
+                    self.target_options
+                ):
                     self.target = self.target_options[event.option_index]
             elif self.phase == "review" and event.option_list.id == "review-files":
                 self._refresh_review()
@@ -439,12 +516,15 @@ def create_app(repo: Path):
         def _model_hint(self) -> None:
             state = "вкл" if self.query_one("#save-tokens", Checkbox).value else "выкл"
             self.query_one("#hint", Static).update(
-                f"↑/↓ модель  Tab/Space настройка  F3: {state}  Enter модель  Ctrl+C выход")
+                f"↑/↓ модель  Tab/Space настройка  F3: {state}  Enter модель  Ctrl+C выход"
+            )
 
         def _work_hint(self) -> None:
             state = "включена" if self.query_one("#log", RichLog).auto_scroll else "выключена"
             self.query_one("#hint", Static).update(
-                f"Tab журнал · ↑/↓ строка · Enter/клик изменения · PgUp/PgDn листать · F2 прокрутка: {state} · Ctrl+C выход")
+                "Tab журнал · ↑/↓ строка · Enter/клик изменения · "
+                f"PgUp/PgDn листать · F2 прокрутка: {state} · Ctrl+C выход"
+            )
 
         def _load_models(self) -> None:
             self.query_one("#model-status", Static).update("Загрузка моделей...")
@@ -452,18 +532,26 @@ def create_app(repo: Path):
             def worker():
                 try:
                     config = AiConfig.from_env()
-                    models = fetch_models(config, on_error=lambda endpoint, error:
-                                          self.call_from_thread(self._log, "ОШИБКА", None,
-                                                                f"Получение моделей {endpoint.base_url}: {error}"))
+                    models = fetch_models(
+                        config,
+                        on_error=lambda endpoint, error: self.call_from_thread(
+                            self._log,
+                            "ОШИБКА",
+                            None,
+                            f"Получение моделей {endpoint.base_url}: {error}",
+                        ),
+                    )
                     self.call_from_thread(self._models_loaded, config, models, None)
-                except Exception as error:
+                except Exception as error:  # noqa: BLE001 — ошибка сервера должна появиться в интерфейсе.
                     self.call_from_thread(self._models_loaded, None, {}, str(error))
 
             Thread(target=worker, daemon=True).start()
 
         def _models_loaded(self, config, models, error):
             if error:
-                self.query_one("#model-status", Static).update(f"Ошибка: {error}. Enter — повторить запрос")
+                self.query_one("#model-status", Static).update(
+                    f"Ошибка: {error}. Enter — повторить запрос"
+                )
                 self._log("ОШИБКА", detail=f"Загрузка моделей: {error}")
                 self.model_names = []
                 return
@@ -487,22 +575,35 @@ def create_app(repo: Path):
                     event.prevent_default()
                 elif event.key in {"up", "down"} and self.log_items:
                     step = -1 if event.key == "up" else 1
-                    self.log_selected = max(0, min(len(self.log_items) - 1,
-                                                   self.log_selected + step if self.log_selected >= 0 else
-                                                   (0 if step > 0 else len(self.log_items) - 1)))
+                    self.log_selected = max(
+                        0,
+                        min(
+                            len(self.log_items) - 1,
+                            self.log_selected + step
+                            if self.log_selected >= 0
+                            else (0 if step > 0 else len(self.log_items) - 1),
+                        ),
+                    )
                     self._redraw_log()
-                    self.query_one("#log", RichLog).scroll_to(y=self.log_rows[self.log_selected], animate=False)
+                    self.query_one("#log", RichLog).scroll_to(
+                        y=self.log_rows[self.log_selected], animate=False
+                    )
                     event.stop()
                     event.prevent_default()
                 elif event.key == "enter" and self.log_selected >= 0:
                     self._toggle_log(self.log_selected)
                     event.stop()
                     event.prevent_default()
-            elif self.phase == "review" and event.key == "space" and self.focused is self.query_one("#review-files"):
+            elif (
+                self.phase == "review"
+                and event.key == "space"
+                and self.focused is self.query_one("#review-files")
+            ):
                 self._ask_retranslate()
                 event.stop()
 
         def _start_translation(self, model: str) -> None:
+            assert self.config is not None
             save_tokens = self.query_one("#save-tokens", Checkbox).value
             self.phase = "work"
             self.query_one("#models").display = False
@@ -511,8 +612,10 @@ def create_app(repo: Path):
             self._work_hint()
             self._new_stage("Подготовка", 1)
             self._log("ЖУРНАЛ", detail=f"Ошибки и повторы: {self.error_log_path}")
-            config = replace(self.config, endpoints=tuple(replace(endpoint, model=model)
-                                                           for endpoint in self.models[model]))
+            config = replace(
+                self.config,
+                endpoints=tuple(replace(endpoint, model=model) for endpoint in self.models[model]),
+            )
             self.translation_config = config
             self.save_tokens = save_tokens
             Thread(target=self._translate_worker, args=(config, save_tokens), daemon=True).start()
@@ -532,12 +635,18 @@ def create_app(repo: Path):
                 return
             elapsed = monotonic() - self.stage_started
             remaining = self.token_eta.remaining(monotonic()) if self.token_eta else None
-            eta = f"~{remaining:.0f} с" if remaining is not None else (
-                "после первого файла" if self.token_eta else "—")
+            eta = (
+                f"~{remaining:.0f} с"
+                if remaining is not None
+                else ("после первого файла" if self.token_eta else "—")
+            )
             self.query_one("#eta", Static).update(
-                f"Готово: {self.done}/{self.total}  ·  Прошло: {elapsed:.0f} с  ·  Осталось: {eta}")
-            names = [str(path.relative_to(repo)) if repo in path.parents else path.name
-                     for path in sorted(self.active)]
+                f"Готово: {self.done}/{self.total}  ·  Прошло: {elapsed:.0f} с  ·  Осталось: {eta}"
+            )
+            names = [
+                str(path.relative_to(repo)) if repo in path.parents else path.name
+                for path in sorted(self.active)
+            ]
             shown = ", ".join(names[:5]) or "—"
             if len(names) > 5:
                 shown += f", ... (+{len(names) - 5})"
@@ -546,20 +655,33 @@ def create_app(repo: Path):
         def _log_render(self, index):
             item = self.log_items[index]
             status, path, detail, before, after, opened = item
-            colors = {"ГОТОВО": "#a8cfb1", "ПРОВЕРЕН": "#a9b9c6", "ПРОПУСК": "#a9b9c6", "ОШИБКА": "#e2a2a5",
-                      "ПОВТОР": "#d5bd94",
-                      "НАЧАТО": "#aac6d5", "СОЗДАНО": "#a8cfb1", "ОБНОВЛЕНО": "#a8cfb1",
-                      "УДАЛЕНО": "#cbbba5"}
+            colors = {
+                "ГОТОВО": "#a8cfb1",
+                "ПРОВЕРЕН": "#a9b9c6",
+                "ПРОПУСК": "#a9b9c6",
+                "ОШИБКА": "#e2a2a5",
+                "ПОВТОР": "#d5bd94",
+                "НАЧАТО": "#aac6d5",
+                "СОЗДАНО": "#a8cfb1",
+                "ОБНОВЛЕНО": "#a8cfb1",
+                "УДАЛЕНО": "#cbbba5",
+            }
             line = Text()
             if before is not None and after is not None and before != after:
                 line.append("▼ " if opened else "▶ ", style="#a9c7d9")
             line.append(f"[{status}] ", style=colors.get(status, "#c2d0dc"))
-            name = str(path.relative_to(repo)) if path and repo in path.parents else str(path) if path else ""
+            name = (
+                str(path.relative_to(repo))
+                if path and repo in path.parents
+                else str(path)
+                if path
+                else ""
+            )
             if path:
                 line.append(name)
             if detail:
                 line.append("\n" + detail)
-            if opened:
+            if opened and before is not None and after is not None:
                 for diff_line in _diff_lines(before, after):
                     line.append("\n  ")
                     line.append_text(diff_line)
@@ -568,7 +690,8 @@ def create_app(repo: Path):
             return line
 
         def _redraw_log(self):
-            # ponytail: журнал перерисовывается при выборе строки; менять на частичную отрисовку лишь при заметной задержке.
+            # ponytail: журнал перерисовывается при выборе строки;
+            # менять на частичную отрисовку лишь при заметной задержке.
             log = self.query_one("#log", RichLog)
             previous = log.scroll_y
             log.clear()
@@ -585,7 +708,11 @@ def create_app(repo: Path):
             if self.phase not in {"work", "failed"}:
                 return
             for index, start in enumerate(self.log_rows):
-                end = self.log_rows[index + 1] if index + 1 < len(self.log_rows) else len(self.query_one("#log", RichLog).lines)
+                end = (
+                    self.log_rows[index + 1]
+                    if index + 1 < len(self.log_rows)
+                    else len(self.query_one("#log", RichLog).lines)
+                )
                 if start <= row < end:
                     self._toggle_log(index)
                     break
@@ -598,20 +725,35 @@ def create_app(repo: Path):
             self._redraw_log()
             self.query_one("#log", RichLog).scroll_to(y=self.log_rows[index], animate=False)
 
-        def _log(self, status: str, path: Path | None = None, detail: str = "",
-                 before: str | None = None, after: str | None = None) -> None:
+        def _log(
+            self,
+            status: str,
+            path: Path | None = None,
+            detail: str = "",
+            before: str | None = None,
+            after: str | None = None,
+        ) -> None:
             item = [status, path, detail, before, after, False]
             self.log_items.append(item)
             log = self.query_one("#log", RichLog)
             self.log_rows.append(len(log.lines))
             log.write(self._log_render(len(self.log_items) - 1))
             if status in {"ОШИБКА", "ПОВТОР"}:
-                name = str(path.relative_to(repo)) if path and repo in path.parents else str(path) if path else ""
+                name = (
+                    str(path.relative_to(repo))
+                    if path and repo in path.parents
+                    else str(path)
+                    if path
+                    else ""
+                )
                 try:
                     with self.error_log_path.open("a", encoding="utf-8") as log:
-                        log.write(f"{datetime.now().isoformat(timespec='seconds')} [{status}] {name}\n{detail}\n\n")
+                        when = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                        log.write(f"{when} [{status}] {name}\n{detail}\n\n")
                 except OSError as error:
-                    self.query_one("#log", RichLog).write(f"[ОШИБКА] Не удалось записать {self.error_log_path}: {error}")
+                    self.query_one("#log", RichLog).write(
+                        f"[ОШИБКА] Не удалось записать {self.error_log_path}: {error}"
+                    )
 
         def _prepare_event(self, kind, path, done, total):
             if kind == "started":
@@ -625,8 +767,14 @@ def create_app(repo: Path):
                 if kind == "completed":
                     self._log("ПРОВЕРЕН", path)
             else:
-                self._log({"создать": "СОЗДАНО", "обновить": "ОБНОВЛЕНО",
-                           "удалить": "УДАЛЕНО"}[kind], path)
+                self._log(
+                    {
+                        "создать": "СОЗДАНО",
+                        "обновить": "ОБНОВЛЕНО",
+                        "удалить": "УДАЛЕНО",
+                    }[kind],
+                    path,
+                )
             self._tick()
 
         def _translation_event(self, kind, path, payload):
@@ -654,9 +802,17 @@ def create_app(repo: Path):
                         self.review_files.append(path)
                     self._log("ГОТОВО", path, before=before, after=after)
                 else:
-                    self._log("ОШИБКА", path,
-                              f"Причина: {payload['error']}\nИсходный текст:\n{payload['source']}\n"
-                              f"Итоговый ответ:\n{payload['response'] if payload['response'] is not None else 'Ответ не получен'}")
+                    response = (
+                        payload["response"]
+                        if payload["response"] is not None
+                        else "Ответ не получен"
+                    )
+                    self._log(
+                        "ОШИБКА",
+                        path,
+                        f"Причина: {payload['error']}\nИсходный текст:\n{payload['source']}\n"
+                        f"Итоговый ответ:\n{response}",
+                    )
             self._tick()
 
         def _usage(self, prompt_tokens, completion_tokens, retry):
@@ -665,15 +821,32 @@ def create_app(repo: Path):
             if retry:
                 self.retry_tokens += prompt_tokens + completion_tokens
 
-        def _retry_event(self, path, kind, attempt, maximum, error, cooldown, will_retry,
-                         source=None, response=None):
+        def _retry_event(
+            self,
+            path,
+            kind,
+            attempt,
+            maximum,
+            error,
+            cooldown,
+            will_retry,
+            source=None,
+            response=None,
+        ):
             if kind == "split":
-                self._log("ПОВТОР", path, f"Уменьшение блока после переполнения ответа: {error}")
+                self._log(
+                    "ПОВТОР",
+                    path,
+                    f"Уменьшение блока после переполнения ответа: {error}",
+                )
                 return
             reason = "Повтор запроса к ИИ" if kind == "request" else "Повтор после проверки ответа"
             wait = f"; ожидание сервера: {cooldown:g} с" if cooldown else ""
-            detail = (f"{reason}: попытка {attempt + 1}/{maximum or '∞'}{wait}; причина: {error}"
-                      if will_retry else f"Попытки исчерпаны ({attempt}/{maximum or '∞'}): {error}")
+            detail = (
+                f"{reason}: попытка {attempt + 1}/{maximum or '∞'}{wait}; причина: {error}"
+                if will_retry
+                else f"Попытки исчерпаны ({attempt}/{maximum or '∞'}): {error}"
+            )
             if source is not None:
                 detail += f"\nИсходный блок:\n{source}\nОтвет ИИ:\n{response}"
             self._log("ПОВТОР" if will_retry else "ОШИБКА", path, detail)
@@ -681,7 +854,10 @@ def create_app(repo: Path):
         def _prepared_skipped(self, count: int) -> None:
             self.skipped += count
             if count:
-                self._log("ПРОПУСК", detail=f"После подготовки перевод не нужен: {count} файлов")
+                self._log(
+                    "ПРОПУСК",
+                    detail=f"После подготовки перевод не нужен: {count} файлов",
+                )
             self._tick()
 
         def _plan_progress(self, done: int) -> None:
@@ -692,25 +868,39 @@ def create_app(repo: Path):
         def _translate_worker(self, config, save_tokens=True):
             try:
                 args = SimpleNamespace(
-                    repo_root=repo, source_culture=self.source, target_culture=self.target,
-                    locale_root=DEFAULT_LOCALE_ROOT, pass_list=Path(os.environ["TRANSLATE_PASS_LIST"])
-                    if os.environ.get("TRANSLATE_PASS_LIST") else None,
+                    repo_root=repo,
+                    source_culture=self.source,
+                    target_culture=self.target,
+                    locale_root=DEFAULT_LOCALE_ROOT,
+                    pass_list=Path(os.environ["TRANSLATE_PASS_LIST"])
+                    if os.environ.get("TRANSLATE_PASS_LIST")
+                    else None,
                     language_profile=Path(os.environ["TRANSLATE_LANGUAGE_PROFILE"])
-                    if os.environ.get("TRANSLATE_LANGUAGE_PROFILE") else None,
+                    if os.environ.get("TRANSLATE_LANGUAGE_PROFILE")
+                    else None,
                     language_ratio=float(os.environ["TRANSLATE_LANGUAGE_RATIO"])
-                    if os.environ.get("TRANSLATE_LANGUAGE_RATIO") else None,
-                    prompt=Path(os.environ["TRANSLATE_PROMPT"]) if os.environ.get("TRANSLATE_PROMPT") else None,
-                    glossary=Path(os.environ["TRANSLATE_GLOSSARY"]) if os.environ.get("TRANSLATE_GLOSSARY") else None,
+                    if os.environ.get("TRANSLATE_LANGUAGE_RATIO")
+                    else None,
+                    prompt=Path(os.environ["TRANSLATE_PROMPT"])
+                    if os.environ.get("TRANSLATE_PROMPT")
+                    else None,
+                    glossary=Path(os.environ["TRANSLATE_GLOSSARY"])
+                    if os.environ.get("TRANSLATE_GLOSSARY")
+                    else None,
                     chunk_size=int(os.environ.get("TRANSLATE_CHUNK_SIZE", "0")),
                     concurrency=int(os.environ.get("TRANSLATE_CONCURRENCY", "2")),
-                    batch_size=int(os.environ.get("TRANSLATE_BATCH_SIZE", "0")), dry_run=False)
+                    batch_size=int(os.environ.get("TRANSLATE_BATCH_SIZE", "0")),
+                    dry_run=False,
+                )
                 checker, budget, prompt = _translation_settings(args)
                 self.translation_settings = (args, checker, budget, prompt)
                 source_root = repo / DEFAULT_LOCALE_ROOT / self.source
                 target_root = repo / DEFAULT_LOCALE_ROOT / self.target
                 cache_path = _cache_path(repo, self.source, self.target)
                 cache = _load_cache(cache_path)
-                inventory, source_digest, source_files, target_hashes = _inventory(source_root, target_root)
+                inventory, source_digest, source_files, target_hashes = _inventory(
+                    source_root, target_root
+                )
                 initial_source, initial_targets = source_digest, target_hashes
                 checker_key = _checker_key(checker)
                 if cache.get("source") != source_digest or cache.get("checker") != checker_key:
@@ -718,32 +908,58 @@ def create_app(repo: Path):
                 verified = cache.get("verified")
                 if not isinstance(verified, dict):
                     verified = {}
-                verified = {name: digest for name, digest in verified.items()
-                            if name in target_hashes and target_hashes[name] == digest}
+                verified = {
+                    name: digest
+                    for name, digest in verified.items()
+                    if name in target_hashes and target_hashes[name] == digest
+                }
                 prep_safe = True
                 if cache.get("prepared") == inventory:
-                    files = [target_root / path.relative_to(source_root) for path in source_files
-                             if path.relative_to(source_root).as_posix() in target_hashes]
+                    files = [
+                        target_root / path.relative_to(source_root)
+                        for path in source_files
+                        if path.relative_to(source_root).as_posix() in target_hashes
+                    ]
                     self.call_from_thread(self._prepare_event, "finished", target_root, 1, 1)
-                    self.call_from_thread(self._log, "ПРОПУСК", None, "Подготовка не требуется: файлы не менялись")
+                    self.call_from_thread(
+                        self._log,
+                        "ПРОПУСК",
+                        None,
+                        "Подготовка не требуется: файлы не менялись",
+                    )
                 else:
                     prepared = prepare_target_files(
-                        source_root, target_root, [Path(".")],
-                        on_event=lambda *items: self.call_from_thread(self._prepare_event, *items))
+                        source_root,
+                        target_root,
+                        [Path(".")],
+                        on_event=lambda *items: self.call_from_thread(self._prepare_event, *items),
+                    )
                     files = list(prepared.target_files)
-                    inventory, source_digest, _, target_hashes = _inventory(source_root, target_root)
-                    changed_names = {path.relative_to(target_root).as_posix()
-                                     for path in prepared.changed_paths}
+                    inventory, source_digest, _, target_hashes = _inventory(
+                        source_root, target_root
+                    )
+                    changed_names = {
+                        path.relative_to(target_root).as_posix() for path in prepared.changed_paths
+                    }
                     prep_safe = source_digest == initial_source and all(
                         initial_targets.get(name) == target_hashes.get(name)
                         for name in initial_targets.keys() | target_hashes.keys()
-                        if name not in changed_names)
+                        if name not in changed_names
+                    )
                     if source_digest != initial_source:
                         verified = {}
-                    verified = {name: digest for name, digest in verified.items()
-                                if name in target_hashes and target_hashes[name] == digest}
-                cache = {"version": 3, "source": source_digest, "checker": checker_key,
-                         "prepared": inventory if prep_safe else None, "verified": verified}
+                    verified = {
+                        name: digest
+                        for name, digest in verified.items()
+                        if name in target_hashes and target_hashes[name] == digest
+                    }
+                cache = {
+                    "version": 3,
+                    "source": source_digest,
+                    "checker": checker_key,
+                    "prepared": inventory if prep_safe else None,
+                    "verified": verified,
+                }
                 _save_cache(cache_path, cache)
                 self.call_from_thread(self._new_stage, "Проверка перевода", len(files))
                 candidates, plans, weights = [], {}, {}
@@ -760,21 +976,32 @@ def create_app(repo: Path):
                         text = ""
                         try:
                             text = read_text(path)
-                            messages, context = _split_messages(text, None, self.target, checker)
+                            messages, context = _split_messages(text, self.target, checker)
                             if messages:
                                 plans[path] = (text, messages, context)
                                 candidates.append(path)
-                                weights[path] = max(1, budget.tokens("\n\n".join(item.text for item in messages)))
+                                weights[path] = max(
+                                    1,
+                                    budget.tokens("\n\n".join(item.text for item in messages)),
+                                )
                             else:
                                 checked[name] = _file_hash(path)
                                 skipped += 1
-                        except Exception:
-                            candidates.append(path)  # Ошибка чтения или разбора будет показана при переводе.
+                        except Exception:  # noqa: BLE001 — разбор повторится в обычном пути с подробной ошибкой.
+                            candidates.append(
+                                path
+                            )  # Ошибка чтения или разбора будет показана при переводе.
                             weights[path] = max(1, budget.tokens(text))
                     if number % 25 == 0 or number == len(files):
                         self.call_from_thread(self._plan_progress, number)
                 self.call_from_thread(self._prepared_skipped, skipped)
-                self.call_from_thread(self._new_stage, "Перевод", len(candidates), weights, args.concurrency)
+                self.call_from_thread(
+                    self._new_stage,
+                    "Перевод",
+                    len(candidates),
+                    weights,
+                    args.concurrency,
+                )
 
                 originals = {path: plan[0] for path, plan in plans.items()}
                 for path in candidates:
@@ -787,32 +1014,61 @@ def create_app(repo: Path):
                 def on_translation_event(kind, path, payload):
                     if kind in {"completed", "skipped"} and path.is_file():
                         checked[path.relative_to(target_root).as_posix()] = _file_hash(path)
-                    self.call_from_thread(self._translation_event, kind, path,
-                                          {**payload, "before": originals.get(path)})
+                    self.call_from_thread(
+                        self._translation_event,
+                        kind,
+                        path,
+                        {**payload, "before": originals.get(path)},
+                    )
 
-                # ponytail: одна группа файлов сохраняет общую статистику; ограничение параллельности задаёт semaphore.
+                # ponytail: одна группа файлов сохраняет общую статистику;
+                # ограничение параллельности задаёт semaphore.
                 result = run_translate_files(
-                    candidates, prompt, args.chunk_size, target_culture=self.target,
-                    concurrency=args.concurrency, checker=checker, budget=budget, ai_config=config,
-                    save_tokens=save_tokens, plans=plans,
+                    candidates,
+                    prompt,
+                    args.chunk_size,
+                    target_culture=self.target,
+                    concurrency=args.concurrency,
+                    checker=checker,
+                    budget=budget,
+                    ai_config=config,
+                    save_tokens=save_tokens,
+                    plans=plans,
                     on_event=on_translation_event,
                     on_retry=lambda *items: self.call_from_thread(self._retry_event, *items),
-                    on_usage=lambda *items: self.call_from_thread(self._usage, *items))
+                    on_usage=lambda *items: self.call_from_thread(self._usage, *items),
+                )
                 try:
                     if candidates:
-                        final_inventory, final_source, _, final_hashes = _inventory(source_root, target_root)
+                        final_inventory, final_source, _, final_hashes = _inventory(
+                            source_root, target_root
+                        )
                     else:
-                        final_inventory, final_source, final_hashes = inventory, source_digest, target_hashes
+                        final_inventory, final_source, final_hashes = (
+                            inventory,
+                            source_digest,
+                            target_hashes,
+                        )
                     expected_hashes = {**target_hashes, **checked}
-                    if prep_safe and final_source == source_digest and final_hashes == expected_hashes:
+                    if (
+                        prep_safe
+                        and final_source == source_digest
+                        and final_hashes == expected_hashes
+                    ):
                         cache["prepared"] = final_inventory
-                    cache["verified"] = {**verified, **{name: digest for name, digest in checked.items()
-                                                        if final_hashes.get(name) == digest}}
+                    cache["verified"] = {
+                        **verified,
+                        **{
+                            name: digest
+                            for name, digest in checked.items()
+                            if final_hashes.get(name) == digest
+                        },
+                    }
                     _save_cache(cache_path, cache)
                 except OSError:
                     pass  # Не превращаем завершённый перевод в ошибку из-за кэша.
                 self.call_from_thread(self._finish, result)
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 — ошибка фоновой подготовки показывается пользователю.
                 self.call_from_thread(self._fatal, str(error))
 
         def _finish(self, result):
@@ -828,13 +1084,17 @@ def create_app(repo: Path):
             files = self.query_one("#review-files", OptionList)
             selected = files.highlighted or 0
             root = repo / DEFAULT_LOCALE_ROOT / self.target
-            files.set_options([f"{path.name}  {path.parent.relative_to(root)}" for path in self.review_files])
+            files.set_options(
+                [f"{path.name}  {path.parent.relative_to(root)}" for path in self.review_files]
+            )
             if self.review_files:
                 files.highlighted = min(selected, len(self.review_files) - 1)
             files.focus()
             self.call_after_refresh(self._refresh_review)
             self.query_one("#hint", Static).update(
-                "Tab панели · ↑/↓ файлы или изменения · Space повтор · Enter выбрать · Alt+Enter итоги · Ctrl+C выход")
+                "Tab панели · ↑/↓ файлы или изменения · Space повтор · "
+                "Enter выбрать · Alt+Enter итоги · Ctrl+C выход"
+            )
 
         def _refresh_review(self):
             files = self.query_one("#review-files", OptionList)
@@ -861,8 +1121,12 @@ def create_app(repo: Path):
             if index >= len(self.review_files):
                 return
             path = self.review_files[index]
-            self.push_screen(RetranslatePrompt(), lambda suggestion: self._start_retranslation(path, suggestion)
-                             if suggestion is not None else None)
+            self.push_screen(
+                RetranslatePrompt(),
+                lambda suggestion: (
+                    self._start_retranslation(path, suggestion) if suggestion is not None else None
+                ),
+            )
 
         def _start_retranslation(self, path, suggestion):
             self.phase = "work"
@@ -875,6 +1139,7 @@ def create_app(repo: Path):
 
         def _retranslate_worker(self, path, suggestion):
             try:
+                assert self.translation_settings is not None
                 args, checker, budget, prompt = self.translation_settings
                 source_root = repo / DEFAULT_LOCALE_ROOT / self.source
                 target_root = repo / DEFAULT_LOCALE_ROOT / self.target
@@ -882,23 +1147,37 @@ def create_app(repo: Path):
                 old = read_text(path)
                 source_messages = message_map(read_text(source))
                 target_messages = message_map(old)
-                messages = [source_messages[key] for key in target_messages if key in source_messages]
+                messages = [
+                    source_messages[key] for key in target_messages if key in source_messages
+                ]
                 if not messages:
                     raise ValueError(f"В исходной локали нет строк для {path}")
                 if suggestion.strip():
                     prompt += "\n\nПожелание пользователя к этому файлу: " + suggestion.strip()
 
                 def on_event(kind, file, payload):
-                    self.call_from_thread(self._translation_event, kind, file,
-                                          {**payload, "before": old, "retranslation": True})
+                    self.call_from_thread(
+                        self._translation_event,
+                        kind,
+                        file,
+                        {**payload, "before": old, "retranslation": True},
+                    )
 
                 result = run_translate_files(
-                    [path], prompt, args.chunk_size, target_culture=self.target,
-                    concurrency=1, checker=checker, budget=budget, ai_config=self.translation_config,
-                    save_tokens=self.save_tokens, plans={path: (old, messages, ())},
+                    [path],
+                    prompt,
+                    args.chunk_size,
+                    target_culture=self.target,
+                    concurrency=1,
+                    checker=checker,
+                    budget=budget,
+                    ai_config=self.translation_config,
+                    save_tokens=self.save_tokens,
+                    plans={path: (old, messages, ())},
                     on_event=on_event,
                     on_retry=lambda *items: self.call_from_thread(self._retry_event, *items),
-                    on_usage=lambda *items: self.call_from_thread(self._usage, *items))
+                    on_usage=lambda *items: self.call_from_thread(self._usage, *items),
+                )
                 if not result.failed_files:
                     cache_path = _cache_path(repo, self.source, self.target)
                     cache = _load_cache(cache_path)
@@ -908,7 +1187,7 @@ def create_app(repo: Path):
                     cache["prepared"] = inventory if cache.get("source") == source_digest else None
                     _save_cache(cache_path, cache)
                 self.call_from_thread(self._retranslation_finished, path, result)
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 — ошибка повтора не должна закрывать экран проверки.
                 self.call_from_thread(self._log, "ОШИБКА", path, str(error))
                 self.call_from_thread(self._show_review)
 
@@ -919,8 +1198,14 @@ def create_app(repo: Path):
             self._show_review()
 
         def _show_summary(self):
-            counts = summary_counts(self.success, self.failures, self.skipped,
-                                    self.prompt_tokens, self.completion_tokens, self.retry_tokens)
+            counts = summary_counts(
+                self.success,
+                self.failures,
+                self.skipped,
+                self.prompt_tokens,
+                self.completion_tokens,
+                self.retry_tokens,
+            )
             table = Table(title="Итоги", show_header=False, border_style="#506474")
             table.add_column("Показатель", style="#a9c7d9")
             table.add_column("Значение")
@@ -930,9 +1215,16 @@ def create_app(repo: Path):
             table.add_row("Уже переведено / пропущено", str(counts["skipped"]))
             table.add_row("Успех среди обработанных", f"{counts['success_percent']:.1f}%")
             table.add_row("Токенов всего", str(counts["tokens"]))
-            table.add_row("Из них на повторы", f"{counts['retry_tokens']} ({counts['retry_percent']:.1f}%)")
-            table.add_row("Токены", "Нет данных от API" if not counts["tokens"] else
-                          f"Вход: {self.prompt_tokens}; выход: {self.completion_tokens}")
+            table.add_row(
+                "Из них на повторы",
+                f"{counts['retry_tokens']} ({counts['retry_percent']:.1f}%)",
+            )
+            table.add_row(
+                "Токены",
+                "Нет данных от API"
+                if not counts["tokens"]
+                else f"Вход: {self.prompt_tokens}; выход: {self.completion_tokens}",
+            )
             if self.error_log_path.is_file():
                 table.add_row("Журнал ошибок", str(self.error_log_path))
             errors = Table(title="Ошибки по частоте", border_style="#506474")
@@ -942,7 +1234,9 @@ def create_app(repo: Path):
             by_error = defaultdict(list)
             for failure in self.failures:
                 by_error[failure.error].append(str(failure.path.relative_to(repo)))
-            for error, paths in sorted(by_error.items(), key=lambda item: (-len(item[1]), item[0])):
+            for error, paths in sorted(
+                by_error.items(), key=lambda item: (-len(item[1]), item[0])
+            ):
                 errors.add_row(error, str(len(paths)), "\n".join(paths))
             if not by_error:
                 errors.add_row("Нет", "0", "—")

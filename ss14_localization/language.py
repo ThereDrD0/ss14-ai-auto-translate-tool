@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import os
+import re
 from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
-import os
 from pathlib import Path
-import re
 
 from .dependencies import import_or_install
-from .fluent import RICH_TAG_RE, RICH_TAG_NAMES, visible_parts
+from .fluent import RICH_TAG_NAMES, RICH_TAG_RE, visible_parts
 from .paths import TOOL_ROOT
 
-
 TAG_RE = re.compile(r"</?[^>]+>|https?://\S+")
-MODEL_CODE_RE = re.compile(r"(?<![\w-])(?=[A-Z0-9-]*\d)[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*[a-z]?(?![\w-])")
+MODEL_CODE_RE = re.compile(
+    r"(?<![\w-])(?=[A-Z0-9-]*\d)[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*[a-z]?(?![\w-])"
+)
 
 
 @dataclass(frozen=True)
@@ -26,12 +27,18 @@ class PassList:
         return _pass_pattern(self.terms, plural=True)
 
     def strip(self, text: str) -> str:
-        text = RICH_TAG_RE.sub(lambda match: " " if match.group(2).lower() in RICH_TAG_NAMES else match.group(0), text)
+        text = RICH_TAG_RE.sub(
+            lambda match: " " if match.group(2).lower() in RICH_TAG_NAMES else match.group(0),
+            text,
+        )
         text = self.pattern.sub(" ", TAG_RE.sub(" ", text))
         return MODEL_CODE_RE.sub(" ", text)
 
     def occurrences(self, text: str):
-        text = RICH_TAG_RE.sub(lambda match: " " if match.group(2).lower() in RICH_TAG_NAMES else match.group(0), text)
+        text = RICH_TAG_RE.sub(
+            lambda match: " " if match.group(2).lower() in RICH_TAG_NAMES else match.group(0),
+            text,
+        )
         return Counter(match.group(0) for match in self.pattern.finditer(TAG_RE.sub(" ", text)))
 
     def required(self, text: str):
@@ -40,12 +47,22 @@ class PassList:
     def normalize_plurals(self, text: str) -> str:
         terms = {term.casefold() for term in self.terms}
         markup = [(match.start(), match.end()) for match in TAG_RE.finditer(text)]
-        markup.extend((match.start(), match.end()) for match in RICH_TAG_RE.finditer(text)
-                      if match.group(2).lower() in RICH_TAG_NAMES)
+        markup.extend(
+            (match.start(), match.end())
+            for match in RICH_TAG_RE.finditer(text)
+            if match.group(2).lower() in RICH_TAG_NAMES
+        )
+
         def replace(match):
             found = match.group(0)
-            return (found[:-1] if found.lower().endswith("s") and found[:-1].casefold() in terms and
-                    not any(left < match.end() and match.start() < right for left, right in markup) else found)
+            return (
+                found[:-1]
+                if found.lower().endswith("s")
+                and found[:-1].casefold() in terms
+                and not any(left < match.end() and match.start() < right for left, right in markup)
+                else found
+            )
+
         return self.pattern.sub(replace, text)
 
     def needs_normalization(self, text: str) -> bool:
@@ -54,17 +71,32 @@ class PassList:
     def assert_preserved(self, source: str, target: str):
         original, translated = self.required(source), self.occurrences(target)
         if original != translated:
-            raise ValueError(f"ИИ изменил слово или название из pass-листа: "
-                             f"исчезли {list((original - translated).elements())}, "
-                             f"появились {list((translated - original).elements())}")
+            raise ValueError(
+                f"ИИ изменил слово или название из pass-листа: "
+                f"исчезли {list((original - translated).elements())}, "
+                f"появились {list((translated - original).elements())}"
+            )
 
 
 @lru_cache(maxsize=16)
 def _pass_pattern(terms, plural=False):
-    alternatives = "|".join(re.escape(term) + ("s?" if plural and len(term) > 1 and
-                              term.isascii() and term[-1].isalpha() and not term.lower().endswith("s") else "")
-                        for term in sorted(terms, key=len, reverse=True))
-    return re.compile(r"(?<![\w'’])(?:" + alternatives + r")(?![\w'’])" if alternatives else r"(?!)", re.IGNORECASE)
+    alternatives = "|".join(
+        re.escape(term)
+        + (
+            "s?"
+            if plural
+            and len(term) > 1
+            and term.isascii()
+            and term[-1].isalpha()
+            and not term.lower().endswith("s")
+            else ""
+        )
+        for term in sorted(terms, key=len, reverse=True)
+    )
+    return re.compile(
+        r"(?<![\w'’])(?:" + alternatives + r")(?![\w'’])" if alternatives else r"(?!)",
+        re.IGNORECASE,
+    )
 
 
 def load_pass_list(repo_root: Path | None = None, path: Path | None = None) -> PassList:
@@ -81,7 +113,7 @@ def load_pass_list(repo_root: Path | None = None, path: Path | None = None) -> P
         module = import_or_install("ruamel.yaml", "ruamel.yaml>=0.18,<1")
         data = module.YAML(typ="safe").load(candidate.read_text(encoding="utf-8-sig")) or {}
         if not isinstance(data, dict):
-            raise ValueError(f"Pass-лист должен быть YAML-словарём: {candidate}")
+            raise ValueError(f"Pass-лист должен быть YAML-словарём: {candidate}")  # noqa: TRY004
         values = data.get("ignore_list", data.get("terms", []))
         if not isinstance(values, list) or any(not isinstance(item, str) for item in values):
             raise ValueError(f"ignore_list должен содержать список строк: {candidate}")
@@ -95,17 +127,23 @@ def load_pass_list(repo_root: Path | None = None, path: Path | None = None) -> P
 def language_code(culture: str) -> str:
     module = import_or_install("langcodes", "langcodes>=3.4,<4")
     code = module.Language.get(culture.replace("_", "-")).language
+    if not isinstance(code, str):
+        raise ValueError(f"Неизвестный язык: {culture}")  # noqa: TRY004 — это ошибка кода языка.
     return {"no": "nb", "iw": "he"}.get(code, code)
 
 
 @lru_cache(maxsize=16)
 def _detector(source: str, target: str):
     module = import_or_install("lingua", "lingua-language-detector>=2.0,<3")
-    supported = {language.iso_code_639_1.name.lower(): language for language in module.Language.all()}
+    supported = {
+        language.iso_code_639_1.name.lower(): language for language in module.Language.all()
+    }
     if target not in supported:
-        raise ValueError(f"Язык {target} не поддерживается встроенным определителем. "
-                         "Укажите TRANSLATE_LANGUAGE_PROFILE с собственным словарём языка; "
-                         "неподдерживаемые языки не считаются переведёнными автоматически.")
+        raise ValueError(
+            f"Язык {target} не поддерживается встроенным определителем. "
+            "Укажите TRANSLATE_LANGUAGE_PROFILE с собственным словарём языка; "
+            "неподдерживаемые языки не считаются переведёнными автоматически."
+        )
     selected = {supported[target], module.Language.ENGLISH}
     if source in supported:
         selected.add(supported[source])
@@ -121,8 +159,12 @@ class LanguageChecker:
     profile: Path | None = None
 
     def __post_init__(self):
-        self.source_code = language_code(os.environ.get("TRANSLATE_DETECT_SOURCE", self.source_culture))
-        self.target_code = language_code(os.environ.get("TRANSLATE_DETECT_TARGET", self.target_culture))
+        self.source_code = language_code(
+            os.environ.get("TRANSLATE_DETECT_SOURCE", self.source_culture)
+        )
+        self.target_code = language_code(
+            os.environ.get("TRANSLATE_DETECT_TARGET", self.target_culture)
+        )
         if self.minimum_ratio is None:
             self.minimum_ratio = 0.15 if language_code(self.target_culture) == "ru" else 0.8
         if not 0 < self.minimum_ratio <= 1:
@@ -133,10 +175,17 @@ class LanguageChecker:
         if self.profile:
             module = import_or_install("ruamel.yaml", "ruamel.yaml>=0.18,<1")
             data = module.YAML(typ="safe").load(self.profile.read_text(encoding="utf-8-sig"))
-            if not isinstance(data, dict) or language_code(data.get("language", "")) != self.target_code:
+            if (
+                not isinstance(data, dict)
+                or language_code(data.get("language", "")) != self.target_code
+            ):
                 raise ValueError("Язык пользовательского профиля не совпадает с целевым языком")
             words = data.get("words")
-            if not isinstance(words, list) or not words or any(not isinstance(word, str) or not word for word in words):
+            if (
+                not isinstance(words, list)
+                or not words
+                or any(not isinstance(word, str) or not word for word in words)
+            ):
                 raise ValueError("Пользовательский профиль должен содержать непустой список words")
             self.profile_pattern = re.compile(_pass_pattern(tuple(words)).pattern, re.IGNORECASE)
             self.detector = self.target_language = None
@@ -148,33 +197,58 @@ class LanguageChecker:
     def ratio(self, text: str) -> float:
         text = self.pass_list.strip(text)
         label, separator, command = text.partition(":")
-        if (self.target_code == "ru" and separator and label.strip().casefold() == "использование" and
-                re.fullmatch(r"\s*[A-Za-z][A-Za-z0-9_]{13,}\s*", command)):
+        if (
+            self.target_code == "ru"
+            and separator
+            and label.strip().casefold() == "использование"
+            and re.fullmatch(r"\s*[A-Za-z][A-Za-z0-9_]{13,}\s*", command)
+        ):
             # ponytail: команда — технический идентификатор, а не английский перевод.
             text = label
         total = sum(character.isalpha() for character in text)
         if not total:
             return 1.0
         if self.profile_pattern:
-            return sum(sum(character.isalpha() for character in match.group(0))
-                       for match in self.profile_pattern.finditer(text)) / total
+            return (
+                sum(
+                    sum(character.isalpha() for character in match.group(0))
+                    for match in self.profile_pattern.finditer(text)
+                )
+                / total
+            )
+        detector = self.detector
+        assert detector is not None
         if total < 40:
-            accepted = total if self.detector.detect_language_of(text) == self.target_language else 0
+            accepted = total if detector.detect_language_of(text) == self.target_language else 0
         else:
-            sections = self.detector.detect_multiple_languages_of(text)
-            accepted = sum(sum(character.isalpha() for character in text[section.start_index:section.end_index])
-                           for section in sections if section.language == self.target_language)
+            sections = detector.detect_multiple_languages_of(text)
+            accepted = sum(
+                sum(
+                    character.isalpha()
+                    for character in text[section.start_index : section.end_index]
+                )
+                for section in sections
+                if section.language == self.target_language
+            )
         # A section classified as Russian must not make nearby Latin prose count as Russian.
         regex = import_or_install("regex", "regex>=2024.5")
-        scripts = {"Hans": ["Han"], "Hant": ["Han"], "Jpan": ["Han", "Hiragana", "Katakana"],
-                   "Kore": ["Hangul", "Han"], "Hrkt": ["Hiragana", "Katakana"]}.get(self.target_script, [self.target_script])
+        scripts = {
+            "Hans": ["Han"],
+            "Hant": ["Han"],
+            "Jpan": ["Han", "Hiragana", "Katakana"],
+            "Kore": ["Hangul", "Han"],
+            "Hrkt": ["Hiragana", "Katakana"],
+        }.get(self.target_script, [self.target_script])
         alphabet = regex.compile("|".join(r"\p{Script=" + script + "}" for script in scripts))
-        script_letters = sum(character.isalpha() and bool(alphabet.fullmatch(character)) for character in text)
+        script_letters = sum(
+            character.isalpha() and bool(alphabet.fullmatch(character)) for character in text
+        )
         accepted = min(accepted, script_letters)
         return accepted / total
 
     def needs_translation(self, node) -> bool:
         text = "\n".join(visible_parts(node))
+        assert self.minimum_ratio is not None
         return self.pass_list.needs_normalization(text) or self.ratio(text) < self.minimum_ratio
 
     def validate(self, node):
@@ -182,6 +256,9 @@ class LanguageChecker:
 
     def validate_text(self, text: str) -> None:
         ratio = self.ratio(text)
+        assert self.minimum_ratio is not None
         if ratio < self.minimum_ratio:
-            raise ValueError(f"Суммарная доля {self.target_culture} составляет {ratio:.0%}, "
-                             f"требуется не менее {self.minimum_ratio:.0%} (без pass-листа и разметки)")
+            raise ValueError(
+                f"Суммарная доля {self.target_culture} составляет {ratio:.0%}, "
+                f"требуется не менее {self.minimum_ratio:.0%} (без pass-листа и разметки)"
+            )

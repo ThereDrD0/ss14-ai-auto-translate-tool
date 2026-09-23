@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-import shutil
 import tempfile
+from pathlib import Path
 
 
 def read_text(path: Path) -> str:
@@ -56,9 +55,7 @@ def remove_empty_files_and_dirs(root: Path, dry_run: bool = False) -> tuple[int,
 
     paths = sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True)
 
-    zero_size_files = {
-        path for path in paths if path.is_file() and path.stat().st_size == 0
-    }
+    zero_size_files = {path for path in paths if path.is_file() and path.stat().st_size == 0}
 
     for path in paths:
         if path in zero_size_files:
@@ -73,13 +70,3 @@ def remove_empty_files_and_dirs(root: Path, dry_run: bool = False) -> tuple[int,
                     path.rmdir()
 
     return removed_files, removed_dirs
-
-
-def remove_tree_if_empty(root: Path, dry_run: bool = False) -> bool:
-    if not root.exists() or any(root.iterdir()):
-        return False
-
-    if not dry_run:
-        root.rmdir()
-
-    return True

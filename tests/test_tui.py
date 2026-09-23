@@ -1,19 +1,26 @@
 from __future__ import annotations
 
-import asyncio
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-from pathlib import Path
 import tempfile
-from threading import Thread
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from threading import Thread
 from unittest.mock import patch
 
-from textual.widgets import Checkbox, Input, OptionList, RichLog
 from textual.color import Color
+from textual.widgets import Checkbox, Input, OptionList, RichLog
 
-from ss14_localization.tui import TokenEta, _cache_path, _diff_lines, _inventory, _load_cache, create_app, summary_counts
+from ss14_localization.tui import (
+    TokenEta,
+    _cache_path,
+    _diff_lines,
+    _inventory,
+    _load_cache,
+    create_app,
+    summary_counts,
+)
 
 
 class TuiTests(unittest.IsolatedAsyncioTestCase):
@@ -25,14 +32,19 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         eta.start(large, 0)
         eta.finish(small, 4)
         eta.start(larger, 4)
-        self.assertAlmostEqual(eta.remaining(6), 36)
-        self.assertGreater(eta.remaining(100), 0)
+        remaining = eta.remaining(6)
+        assert remaining is not None
+        self.assertAlmostEqual(remaining, 36)
+        remaining = eta.remaining(100)
+        assert remaining is not None
+        self.assertGreater(remaining, 0)
         eta.finish(large, 8)
         eta.finish(larger, 9)
         self.assertEqual(eta.remaining(9), 0)
 
     def test_no_arguments_open_tui(self):
         from ss14_localization.cli import main
+
         with patch("ss14_localization.tui.run", return_value=0) as launch:
             self.assertEqual(main([]), 0)
         launch.assert_called_once_with()
@@ -53,8 +65,12 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(before[3]["a.ftl"], after[3]["a.ftl"])
 
     def test_diff_keeps_line_numbers_indent_and_marks_changed_words(self):
-        rows = _diff_lines("a = Hello\n    .desc = Old word\n", "a = Привет\n    .desc = New word\n")
-        self.assertEqual([row.plain.split()[-1] for row in rows], ["Hello", "Привет", "word", "word"])
+        rows = _diff_lines(
+            "a = Hello\n    .desc = Old word\n", "a = Привет\n    .desc = New word\n"
+        )
+        self.assertEqual(
+            [row.plain.split()[-1] for row in rows], ["Hello", "Привет", "word", "word"]
+        )
         self.assertIn("   2", rows[2].plain)
         self.assertIn("    .desc", rows[2].plain)
         self.assertTrue(any("on #285b3c" in str(span.style) for span in rows[-1].spans))
@@ -102,7 +118,12 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 app.phase = "work"
                 app.query_one("#choose").display = False
                 app.query_one("#work").display = True
-                app._log("ГОТОВО", source / "a.ftl", before="a = Hello\n", after="a = Привет\n")
+                app._log(
+                    "ГОТОВО",
+                    source / "a.ftl",
+                    before="a = Hello\n",
+                    after="a = Привет\n",
+                )
                 log = app.query_one("#log", RichLog)
                 log.focus()
                 await pilot.press("down", "enter")
@@ -120,7 +141,9 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             target.mkdir()
             for name in ("a", "b"):
                 (source / f"{name}.ftl").write_text(f"{name} = Hello\n", encoding="utf-8")
-                (target / f"{name}.ftl").write_text(f"{name} = {'Привет ' * 25}\n", encoding="utf-8")
+                (target / f"{name}.ftl").write_text(
+                    f"{name} = {'Привет ' * 25}\n", encoding="utf-8"
+                )
             app = create_app(repo)
             app.review_files = [target / "a.ftl", target / "b.ftl"]
             app.review_before = {path: f"{path.stem} = Hello\n" for path in app.review_files}
@@ -134,8 +157,10 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("down")
                 self.assertIn("b.ftl", "\n".join(line.text for line in view.lines))
                 await pilot.press("tab")
+                assert app.focused is not None
                 self.assertEqual(app.focused.id, "review-diff")
                 await pilot.press("tab")
+                assert app.focused is not None
                 self.assertEqual(app.focused.id, "review-done")
                 await pilot.click("#review-done")
                 self.assertEqual(app.phase, "summary")
@@ -176,11 +201,19 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 requests.append(body)
                 source = body["messages"][1]["content"]
                 import re
+
                 ids = re.findall(r"^(translation-batch-\d+-[ab])\s*=", source, re.MULTILINE)
-                content = "\n".join(f"{key} = Привет" for key in ids) if ids and all(
-                    key.endswith("-a") for key in ids) else "broken = {"
-                self.reply({"choices": [{"message": {"content": content}, "finish_reason": "stop"}],
-                            "usage": {"prompt_tokens": 13, "completion_tokens": 5}})
+                content = (
+                    "\n".join(f"{key} = Привет" for key in ids)
+                    if ids and all(key.endswith("-a") for key in ids)
+                    else "broken = {"
+                )
+                self.reply(
+                    {
+                        "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 13, "completion_tokens": 5},
+                    }
+                )
 
             def assert_path(self, expected):
                 if self.path != expected:
@@ -194,20 +227,26 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.end_headers()
                 self.wfile.write(raw)
 
-            def log_message(self, *_):
+            def log_message(self, format, *args):
                 pass
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
-                "TRANSLATE_AI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
-                "TRANSLATE_AI_MODEL": "ignored",
-                "TRANSLATE_AI_RESPONSE_MAX_ATTEMPTS": "2",
-                "TRANSLATE_AI_RESPONSE_COOLDOWN_SECONDS": "0",
-                "TRANSLATE_CONCURRENCY": "2",
-            }):
+            with (
+                tempfile.TemporaryDirectory() as temporary,
+                patch.dict(
+                    os.environ,
+                    {
+                        "TRANSLATE_AI_BASE_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                        "TRANSLATE_AI_MODEL": "ignored",
+                        "TRANSLATE_AI_RESPONSE_MAX_ATTEMPTS": "2",
+                        "TRANSLATE_AI_RESPONSE_COOLDOWN_SECONDS": "0",
+                        "TRANSLATE_CONCURRENCY": "2",
+                    },
+                ),
+            ):
                 repo = Path(temporary)
                 source = repo / "Resources" / "Locale" / "en-US"
                 source.mkdir(parents=True)
@@ -245,9 +284,15 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(len(app.review_files), 1)
                     self.assertEqual(app.review_files[0].name, "a.ftl")
                     self.assertTrue(app.query_one("#review-diff", RichLog).wrap)
-                    self.assertIn("Привет", "\n".join(line.text for line in
-                                                  app.query_one("#review-diff", RichLog).lines))
-                    self.assertTrue(any(item[3] is not None and not item[5] for item in app.log_items))
+                    self.assertIn(
+                        "Привет",
+                        "\n".join(
+                            line.text for line in app.query_one("#review-diff", RichLog).lines
+                        ),
+                    )
+                    self.assertTrue(
+                        any(item[3] is not None and not item[5] for item in app.log_items)
+                    )
                     before_retry = len(requests)
                     await pilot.press("space")
                     await pilot.pause()
@@ -281,18 +326,38 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(app.failures[0].path.name, "b.ftl")
                     self.assertEqual(app.prompt_tokens + app.completion_tokens, 126)
                     self.assertEqual(app.retry_tokens, 36)
-                    self.assertIn("ПОВТОР", "\n".join(line.text for line in app.query_one("#log", RichLog).lines))
-                    self.assertEqual(summary_counts(app.success, app.failures, app.skipped,
-                                                    app.prompt_tokens, app.completion_tokens,
-                                                    app.retry_tokens)["success_percent"], 50.0)
-                    self.assertEqual((source.parent / "ru-RU" / "a.ftl").read_text(encoding="utf-8"),
-                                     "a = Привет\n")
-                    self.assertEqual((source.parent / "ru-RU" / "b.ftl").read_text(encoding="utf-8"),
-                                     "b = Hello\n")
+                    self.assertIn(
+                        "ПОВТОР",
+                        "\n".join(line.text for line in app.query_one("#log", RichLog).lines),
+                    )
+                    self.assertEqual(
+                        summary_counts(
+                            app.success,
+                            app.failures,
+                            app.skipped,
+                            app.prompt_tokens,
+                            app.completion_tokens,
+                            app.retry_tokens,
+                        )["success_percent"],
+                        50.0,
+                    )
+                    self.assertEqual(
+                        (source.parent / "ru-RU" / "a.ftl").read_text(encoding="utf-8"),
+                        "a = Привет\n",
+                    )
+                    self.assertEqual(
+                        (source.parent / "ru-RU" / "b.ftl").read_text(encoding="utf-8"),
+                        "b = Hello\n",
+                    )
                     self.assertFalse((source.parent / "ru-RU" / "empty.ftl").exists())
                     self.assertTrue(all(body["model"] == "test-model" for body in requests))
-                    self.assertFalse(any("c =" in item["content"] for body in requests
-                                         for item in body["messages"]))
+                    self.assertFalse(
+                        any(
+                            "c =" in item["content"]
+                            for body in requests
+                            for item in body["messages"]
+                        )
+                    )
                     error_log = app.error_log_path.read_text(encoding="utf-8")
                     self.assertIn("[ПОВТОР]", error_log)
                     self.assertIn("[ОШИБКА]", error_log)
@@ -306,8 +371,10 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(cache["prepared"], _inventory(source, source.parent / "ru-RU")[0])
                 self.assertIn("a.ftl", cache["verified"])
                 self.assertNotIn("b.ftl", cache["verified"])
-                with patch("ss14_localization.strings.prepare_target_files",
-                           side_effect=AssertionError("подготовка должна использовать кэш")):
+                with patch(
+                    "ss14_localization.strings.prepare_target_files",
+                    side_effect=AssertionError("подготовка должна использовать кэш"),
+                ):
                     again = create_app(repo)
                     again.error_log_path = repo / "translation-errors.log"
                     async with again.run_test() as pilot:

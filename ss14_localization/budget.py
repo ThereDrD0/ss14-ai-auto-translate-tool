@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from functools import lru_cache
 import math
 import os
 import re
+from dataclasses import dataclass, replace
+from functools import lru_cache
 
 from .dependencies import import_or_install
 
@@ -25,20 +25,31 @@ class OutputBudget:
     max_input_tokens: int = 922000
 
     def __post_init__(self):
-        if (self.max_tokens < 64 or not 0 < self.safety < 1 or self.expansion < 1 or
-                not math.isfinite(self.expansion) or self.reserve < 0 or self.max_input_tokens < 0):
-            raise ValueError("Некорректный бюджет ответа: tokens >= 64, 0 < safety < 1, expansion >= 1, reserve >= 0")
+        if (
+            self.max_tokens < 64
+            or not 0 < self.safety < 1
+            or self.expansion < 1
+            or not math.isfinite(self.expansion)
+            or self.reserve < 0
+            or self.max_input_tokens < 0
+        ):
+            raise ValueError(
+                "Некорректный бюджет ответа: tokens >= 64, 0 < safety < 1, "
+                "expansion >= 1, reserve >= 0"
+            )
         if self.capacity <= self.reserve + 8:
             raise ValueError("Окно ответа слишком мало относительно заданного запаса")
 
     @classmethod
     def from_env(cls):
-        return cls(int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "128000")),
-                   float(os.environ.get("TRANSLATE_AI_OUTPUT_SAFETY", "0.65")),
-                   float(os.environ.get("TRANSLATE_AI_OUTPUT_EXPANSION", "3")),
-                   int(os.environ.get("TRANSLATE_AI_OUTPUT_RESERVE", "128")),
-                   os.environ.get("TRANSLATE_AI_TOKENIZER", "bytes"),
-                   int(os.environ.get("TRANSLATE_AI_MAX_INPUT_TOKENS", "922000")))
+        return cls(
+            int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "128000")),
+            float(os.environ.get("TRANSLATE_AI_OUTPUT_SAFETY", "0.65")),
+            float(os.environ.get("TRANSLATE_AI_OUTPUT_EXPANSION", "3")),
+            int(os.environ.get("TRANSLATE_AI_OUTPUT_RESERVE", "128")),
+            os.environ.get("TRANSLATE_AI_TOKENIZER", "bytes"),
+            int(os.environ.get("TRANSLATE_AI_MAX_INPUT_TOKENS", "922000")),
+        )
 
     @property
     def capacity(self):
@@ -54,8 +65,10 @@ class OutputBudget:
         return math.ceil(self.tokens(text) * self.expansion) + self.reserve
 
     def fits(self, text, prompt=""):
-        return (self.estimated_output(text) <= self.capacity and
-                (not self.max_input_tokens or self.tokens(prompt + text) + self.reserve <= self.max_input_tokens))
+        return self.estimated_output(text) <= self.capacity and (
+            not self.max_input_tokens
+            or self.tokens(prompt + text) + self.reserve <= self.max_input_tokens
+        )
 
     def smaller(self):
         return replace(self, expansion=self.expansion * 2)
@@ -65,7 +78,9 @@ class OutputBudget:
         forbidden = []
         if protected:
             forbidden.extend((match.start(), match.end()) for match in protected.finditer(text))
-        forbidden.extend((match.start(), match.end()) for match in re.finditer(r"\[[^\]]*\]|<[^>]*>", text))
+        forbidden.extend(
+            (match.start(), match.end()) for match in re.finditer(r"\[[^\]]*\]|<[^>]*>", text)
+        )
         pieces = []
         start = 0
         while start < len(text):
@@ -85,7 +100,9 @@ class OutputBudget:
                         best = left
                         break
                 if best <= start:
-                    raise ValueError("Неделимое название из pass-листа или тег не помещается в окно ответа")
+                    raise ValueError(
+                        "Неделимое название из pass-листа или тег не помещается в окно ответа"
+                    )
                 whitespace = [match.end() for match in re.finditer(r"\s+", text[start:best])]
                 if whitespace:
                     boundary = start + whitespace[-1]

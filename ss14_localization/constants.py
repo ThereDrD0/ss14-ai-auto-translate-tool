@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 import os
-
+from pathlib import Path
 
 DEFAULT_SOURCE_CULTURE = os.environ.get("TRANSLATE_SOURCE_CULTURE", "en-US")
 DEFAULT_TARGET_CULTURE = os.environ.get("TRANSLATE_TARGET_CULTURE", "ru-RU")

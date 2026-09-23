@@ -4,8 +4,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .filesystem import iter_files, read_text
-from .fluent import (FluentSyntaxError, assert_structure, entries, parse_resource, rich_tags,
-                     serialize_entry, visible_parts)
+from .fluent import (
+    FluentSyntaxError,
+    assert_structure,
+    entries,
+    parse_resource,
+    rich_tags,
+    visible_parts,
+)
 
 
 @dataclass(frozen=True)
@@ -43,7 +49,12 @@ def validate_locale(source_root: Path, target_root: Path, checker=None) -> Valid
             target_resources[path] = resource
             for key in entries(resource):
                 if key in target_owners:
-                    report.add("error", path.relative_to(target_root), key, f"duplicate key in {target_owners[key]}")
+                    report.add(
+                        "error",
+                        path.relative_to(target_root),
+                        key,
+                        f"duplicate key in {target_owners[key]}",
+                    )
                 target_owners[key] = path
         except ValueError as error:
             report.add("error", path.relative_to(target_root), "", str(error))
@@ -56,7 +67,9 @@ def validate_locale(source_root: Path, target_root: Path, checker=None) -> Valid
         except ValueError as error:
             report.add("error", relative, "", str(error))
             continue
-        target_messages = entries(target_resources[target_path]) if target_path in target_resources else {}
+        target_messages = (
+            entries(target_resources[target_path]) if target_path in target_resources else {}
+        )
         actual_order = [key for key in target_messages if key in source_messages]
         expected_order = [key for key in source_messages if key in target_messages]
         if actual_order != expected_order:
@@ -68,12 +81,26 @@ def validate_locale(source_root: Path, target_root: Path, checker=None) -> Valid
             if target_message is None:
                 report.missing_messages += 1
                 elsewhere = target_owners.get(message_id)
-                report.add("error", relative, message_id, f"missing target message; existing location={elsewhere}")
+                report.add(
+                    "error",
+                    relative,
+                    message_id,
+                    f"missing target message; existing location={elsewhere}",
+                )
                 continue
 
-            if checker and checker.needs_translation(target_message) and target_path.name not in checker.pass_list.ignored_files:
+            if (
+                checker
+                and checker.needs_translation(target_message)
+                and target_path.name not in checker.pass_list.ignored_files
+            ):
                 report.untranslated_messages += 1
-                report.add("error", relative, message_id, "target language ratio is below threshold")
+                report.add(
+                    "error",
+                    relative,
+                    message_id,
+                    "target language ratio is below threshold",
+                )
 
             source_copy, target_copy = source_message.clone(), target_message.clone()
             source_copy.comment = target_copy.comment = None
@@ -90,7 +117,8 @@ def validate_locale(source_root: Path, target_root: Path, checker=None) -> Valid
                     "error",
                     relative,
                     message_id,
-                    f"rich-text tag mismatch: source={dict(source_tags)} target={dict(target_tags)}",
+                    f"rich-text tag mismatch: source={dict(source_tags)} "
+                    f"target={dict(target_tags)}",
                 )
 
             if checker:
