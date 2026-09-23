@@ -208,9 +208,14 @@ def serialize_entry(entry) -> str:
 
 
 def normalize_commas(text: str) -> str:
+    def space_comma(match: re.Match[str]) -> str:
+        before, after = match.string[match.start() - 1], match.string[match.end()]
+        return match.group() if before.isdecimal() and after.isdecimal() else ", "
+
     parts = TECHNICAL_TEXT_RE.split(text)
     return "".join(
-        part if index % 2 else COMMA_SPACING_RE.sub(", ", part) for index, part in enumerate(parts)
+        part if index % 2 else COMMA_SPACING_RE.sub(space_comma, part)
+        for index, part in enumerate(parts)
     )
 
 

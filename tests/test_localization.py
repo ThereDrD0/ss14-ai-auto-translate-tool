@@ -76,6 +76,17 @@ class PreparationTests(Fixture):
         )
         self.assertEqual(self.prepare().prepared_files, 0)
 
+    def test_preserves_decimal_commas_during_preparation(self):
+        self.write(self.source / "a.ftl", "ent-BoxMagazineRifleM52 = magazine box\n")
+        translated = (
+            "ent-BoxMagazineRifleM52 = набор магазинов М-52\n"
+            "    .desc = коробка с магазинами 5,56мм для М-52 каждого стандартного типа.\n"
+        )
+        self.write(self.target / "a.ftl", translated)
+
+        self.assertEqual(self.prepare().prepared_files, 0)
+        self.assertEqual((self.target / "a.ftl").read_text(encoding="utf-8"), translated)
+
     def test_comment_translation_survives_different_spacing(self):
         self.write(
             self.source / "a.ftl",
@@ -216,10 +227,10 @@ class SyntaxTests(unittest.TestCase):
         self.assertEqual(
             normalize_commas(
                 '[color="a,b"] CardBox ,Filled ,54 https://x.test/a,b '
-                "{ NUMBER($count,minimumFractionDigits: 2) }"
+                "{ NUMBER($count,minimumFractionDigits: 2) } 5,56мм 7, 62мм"
             ),
             '[color="a,b"] CardBox, Filled, 54 https://x.test/a,b '
-            "{ NUMBER($count,minimumFractionDigits: 2) }",
+            "{ NUMBER($count,minimumFractionDigits: 2) } 5,56мм 7, 62мм",
         )
         self.assertIn(
             ".suffix = CardBox, Filled, 54",
