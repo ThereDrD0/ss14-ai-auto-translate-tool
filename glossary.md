@@ -20,3 +20,6 @@ Preferred terms:
 - ert: ОБР
 - eva: ева
 - changeling: генокрад
+- grid: грид
+- cybersan: киберсан
+- username: логин
