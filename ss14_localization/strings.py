@@ -73,13 +73,16 @@ def _read_resource(path, texts=None):
 def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event=None):
     ast = syntax().ast
     sources = {}
+    source_texts = {}
+    source_layouts = {}
     owners = {}
     source_origins = {}
     for source_path, target_path in sorted(pairs.items()):
         if on_event:
             on_event("started", source_path, len(sources), len(pairs) + 1)
-        resource = _read_resource(source_path)
+        resource = _read_resource(source_path, source_texts)
         sources[target_path] = resource
+        source_layouts[target_path] = source_texts[source_path]
         if on_event:
             on_event("completed", source_path, len(sources), len(pairs) + 1)
         for key, node in entries(resource).items():
@@ -125,7 +128,9 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
                 for node in targets[path].body
                 if isinstance(node, (ast.Message, ast.Term)) and entry_id(node) not in owners
             )
-        plans[path] = serialize_resource(resource)
+        layout = targets.get(path, source_resource)
+        original_text = target_texts[path] if path in targets else source_layouts[path]
+        plans[path] = serialize_resource(resource, original_text, layout)
 
     for path, resource in targets.items():
         if path in sources:
@@ -135,7 +140,7 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
             for node in resource.body
             if not isinstance(node, (ast.Message, ast.Term)) or entry_id(node) not in owners
         ]
-        plans[path] = serialize_resource(ast.Resource(kept))
+        plans[path] = serialize_resource(ast.Resource(kept), target_texts[path], resource)
 
     # Validate the complete plan before touching any existing files.
     changed = []

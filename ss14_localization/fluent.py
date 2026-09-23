@@ -173,8 +173,34 @@ def entries(resource) -> dict:
     }
 
 
-def serialize_resource(resource) -> str:
-    return syntax().FluentSerializer().serialize(resource)
+def serialize_resource(resource, original_text: str | None = None, original_resource=None) -> str:
+    text = syntax().FluentSerializer().serialize(resource)
+    if not original_text or "\n\n" not in original_text:
+        return text
+
+    ast = syntax().ast
+    original_resource = original_resource or parse_resource(original_text)
+    blank_lines = {}
+    previous_end = 0
+    for node in original_resource.body:
+        if isinstance(node, (ast.Message, ast.Term)):
+            gap = original_text[previous_end : node.span.start]
+            blank_lines[entry_id(node)] = max(0, gap.count("\n") - (previous_end != 0))
+        previous_end = node.span.end
+
+    insertions = []
+    previous_end = 0
+    for node in parse_resource(text).body:
+        if isinstance(node, (ast.Message, ast.Term)):
+            gap = text[previous_end : node.span.start]
+            existing = max(0, gap.count("\n") - (previous_end != 0))
+            missing = blank_lines.get(entry_id(node), 0) - existing
+            if missing > 0:
+                insertions.append((node.span.start, missing))
+        previous_end = node.span.end
+    for offset, count in reversed(insertions):
+        text = text[:offset] + "\n" * count + text[offset:]
+    return text
 
 
 def serialize_entry(entry) -> str:

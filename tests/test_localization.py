@@ -62,6 +62,19 @@ class Fixture(unittest.TestCase):
 
 
 class PreparationTests(Fixture):
+    def test_preserves_target_blank_lines_when_adding_key(self):
+        self.write(self.source / "a.ftl", "a = Hello\nb = World\nc = Bye\n")
+        original = "a = Привет\n\n\nb = Мир\n"
+        self.write(self.target / "a.ftl", original)
+
+        self.prepare()
+
+        self.assertEqual(
+            (self.target / "a.ftl").read_text(encoding="utf-8"),
+            original + "c = Bye\n",
+        )
+        self.assertEqual(self.prepare().prepared_files, 0)
+
     def test_empty_source_file_is_not_sent_to_translation(self):
         self.write(self.source / "empty.ftl", "")
         self.write(self.target / "empty.ftl", "filled = Привет\n")
@@ -464,6 +477,16 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self.checker = LanguageChecker("en-US", "ru-RU", load_pass_list())
+
+    async def test_translation_preserves_blank_lines_between_keys(self):
+        path = self.target / "a.ftl"
+        self.write(path, "a = Hello\n\n\nb = World\n")
+
+        await translate_file(
+            path, FakeClient(), "Prompt", 4000, target_culture="ru-RU", checker=self.checker
+        )
+
+        self.assertEqual(path.read_text(encoding="utf-8"), "a = Привет\n\n\nb = Мир\n")
 
     async def test_token_saving_only_sends_untranslated_keys(self):
         for save_tokens in (False, True):

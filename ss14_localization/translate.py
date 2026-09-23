@@ -19,7 +19,6 @@ from .fluent import (
     message_map,
     parse_resource,
     serialize_entry,
-    serialize_resource,
     syntax,
     visible_parts,
 )
@@ -450,12 +449,18 @@ async def _safe_chunk(client, prompt, chunk, checker, budget, context=()):
 def _replace_messages(text, replacements):
     resource = parse_resource(text)
     ast = syntax().ast
-    for index, node in enumerate(resource.body):
-        if isinstance(node, (ast.Message, ast.Term)):
-            key = entry_id(node)
-            if key in replacements:
-                resource.body[index] = entries(parse_resource(replacements[key]))[key]
-    result = serialize_resource(resource)
+    pieces = []
+    previous_end = 0
+    for node in resource.body:
+        if not isinstance(node, (ast.Message, ast.Term)):
+            continue
+        key = entry_id(node)
+        if key in replacements:
+            replacement = serialize_entry(entries(parse_resource(replacements[key]))[key])
+            pieces.extend((text[previous_end : node.span.start], replacement.rstrip("\n")))
+            previous_end = node.span.end
+    pieces.append(text[previous_end:])
+    result = "".join(pieces)
     parse_resource(result)
     return result
 
