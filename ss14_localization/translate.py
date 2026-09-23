@@ -17,6 +17,7 @@ from .fluent import (
     entries,
     entry_id,
     message_map,
+    normalize_resource_commas,
     parse_resource,
     serialize_entry,
     syntax,
@@ -458,6 +459,7 @@ def _replace_messages(text, replacements):
         if key in replacements:
             translated = entries(parse_resource(replacements[key]))[key]
             translated.comment = node.comment.clone() if node.comment else None
+            normalize_resource_commas(translated)
             replacement = serialize_entry(translated)
             pieces.extend((text[previous_end : node.span.start], replacement.rstrip("\n")))
             previous_end = node.span.end

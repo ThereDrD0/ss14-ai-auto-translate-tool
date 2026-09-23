@@ -64,6 +64,12 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(before[0], after[0])
             self.assertNotEqual(before[3]["a.ftl"], after[3]["a.ftl"])
 
+    def test_old_cache_is_invalidated_for_comma_formatting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "cache.json"
+            path.write_text('{"version": 3, "prepared": "old"}', encoding="utf-8")
+            self.assertEqual(_load_cache(path), {})
+
     def test_diff_keeps_line_numbers_indent_and_marks_changed_words(self):
         rows = _diff_lines(
             "a = Hello\n    .desc = Old word\n", "a = Привет\n    .desc = New word\n"

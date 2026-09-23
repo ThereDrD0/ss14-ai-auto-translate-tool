@@ -207,6 +207,26 @@ def serialize_entry(entry) -> str:
     return serialize_resource(syntax().ast.Resource([entry]))
 
 
+def normalize_commas(text: str) -> str:
+    parts = TECHNICAL_TEXT_RE.split(text)
+    return "".join(
+        part if index % 2 else COMMA_SPACING_RE.sub(", ", part) for index, part in enumerate(parts)
+    )
+
+
+def normalize_resource_commas(node) -> None:
+    ast = syntax().ast
+    if isinstance(node, ast.TextElement):
+        node.value = normalize_commas(node.value)
+    elif isinstance(node, ast.BaseNode):
+        for key, value in vars(node).items():
+            if key not in {"span", "comment", "arguments"}:
+                normalize_resource_commas(value)
+    elif isinstance(node, list):
+        for value in node:
+            normalize_resource_commas(value)
+
+
 def visible_parts(entry) -> list[str]:
     return [
         pattern_text(pattern)
@@ -265,6 +285,8 @@ def assert_structure(source, target) -> None:
 MESSAGE_START_RE = re.compile(r"^(?P<id>-?[A-Za-z][A-Za-z0-9_-]*)\s*=")
 ATTRIBUTE_RE = re.compile(r"^\s+\.([A-Za-z][A-Za-z0-9_-]*)\s*=", re.MULTILINE)
 RICH_TAG_RE = re.compile(r"(?<!\\)\[(\/?)([A-Za-z][A-Za-z0-9_-]*)(?:[^\]]*)\]")
+COMMA_SPACING_RE = re.compile(r"(?<=\w)[ \t]*,[ \t]*(?=\w)")
+TECHNICAL_TEXT_RE = re.compile(r"(https?://\S+|<[^>\n]+>|\[[^\]\n]+\]|\{[^{}\n]+\})")
 RICH_TAG_NAMES = {
     "bold",
     "bolditalic",
@@ -410,7 +432,7 @@ def _canonical_message(text: str) -> str:
 
 
 def render_pattern(prefix: str, value: str) -> list[str]:
-    prepared = escape_leading_multiline_markup(value)
+    prepared = escape_leading_multiline_markup(normalize_commas(value))
     lines = prepared.splitlines() or [""]
     if len(lines) == 1:
         return [f"{prefix} {lines[0]}".rstrip()]

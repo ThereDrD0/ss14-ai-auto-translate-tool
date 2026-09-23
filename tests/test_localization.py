@@ -24,8 +24,10 @@ from ss14_localization.fluent import (
     FluentSyntaxError,
     entries,
     message_map,
+    normalize_commas,
     parse_resource,
     pattern_text,
+    render_entity_message,
     serialize_entry,
     serialize_resource,
 )
@@ -63,6 +65,17 @@ class Fixture(unittest.TestCase):
 
 
 class PreparationTests(Fixture):
+    def test_normalizes_commas_in_existing_translation(self):
+        self.write(self.source / "a.ftl", "a = CardBox ,Empty\n")
+        self.write(self.target / "a.ftl", "a = Коробка ,пустая\n")
+
+        self.prepare()
+
+        self.assertEqual(
+            (self.target / "a.ftl").read_text(encoding="utf-8"), "a = Коробка, пустая\n"
+        )
+        self.assertEqual(self.prepare().prepared_files, 0)
+
     def test_comment_translation_survives_different_spacing(self):
         self.write(
             self.source / "a.ftl",
@@ -199,6 +212,20 @@ class PreparationTests(Fixture):
 
 
 class SyntaxTests(unittest.TestCase):
+    def test_comma_spacing_skips_markup_urls_and_formats_prototypes(self):
+        self.assertEqual(
+            normalize_commas(
+                '[color="a,b"] CardBox ,Filled ,54 https://x.test/a,b '
+                "{ NUMBER($count,minimumFractionDigits: 2) }"
+            ),
+            '[color="a,b"] CardBox, Filled, 54 https://x.test/a,b '
+            "{ NUMBER($count,minimumFractionDigits: 2) }",
+        )
+        self.assertIn(
+            ".suffix = CardBox, Filled, 54",
+            render_entity_message("box", "Box", None, "CardBox ,Filled ,54"),
+        )
+
     def check(self, source, target):
         return _parse_translation_response(target, message_map(source))
 
@@ -513,6 +540,15 @@ class FakeClient:
 
 
 class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
+    def test_replacement_normalizes_commas_without_touching_syntax(self):
+        original = "a = CardBox ,Empty { NUMBER($count, minimumFractionDigits: 2) }\n"
+        replacement = "a = Коробка ,пустая { NUMBER($count, minimumFractionDigits: 2) }"
+
+        self.assertEqual(
+            _replace_messages(original, {"a": replacement}),
+            "a = Коробка, пустая { NUMBER($count, minimumFractionDigits: 2) }\n",
+        )
+
     def setUp(self):
         super().setUp()
         self.checker = LanguageChecker("en-US", "ru-RU", load_pass_list())
