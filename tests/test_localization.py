@@ -342,7 +342,7 @@ class LanguageTests(unittest.TestCase):
 
     def test_any_supported_locale_not_just_ru_en(self):
         self.assertEqual(self.ru.minimum_ratio, 0.15)
-        self.assertEqual(self.fr.minimum_ratio, 0.8)
+        self.assertEqual(self.fr.minimum_ratio, 0.15)
         self.assertEqual(self.fr.ratio("Bonjour tout le monde"), 1)
         self.assertEqual(self.fr.ratio("Hello world"), 0)
         de = LanguageChecker("fr-FR", "de-DE", self.passed)

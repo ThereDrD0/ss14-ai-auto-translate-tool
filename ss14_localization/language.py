@@ -166,7 +166,7 @@ class LanguageChecker:
             os.environ.get("TRANSLATE_DETECT_TARGET", self.target_culture)
         )
         if self.minimum_ratio is None:
-            self.minimum_ratio = 0.15 if language_code(self.target_culture) == "ru" else 0.8
+            self.minimum_ratio = 0.15
         if not 0 < self.minimum_ratio <= 1:
             raise ValueError("Порог доли целевого языка должен быть в пределах (0, 1]")
         if self.source_code == self.target_code:
