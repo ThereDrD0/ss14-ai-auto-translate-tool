@@ -27,6 +27,8 @@ from .fluent import (
 from .language import LanguageChecker, PassList, load_pass_list
 
 _current_file = ContextVar("translation_file", default=None)
+# ponytail: большие ответы чаще ошибаются; увеличивать предел после замеров качества.
+MAX_CHUNK_MESSAGES = 100
 
 
 @dataclass(frozen=True)
@@ -111,7 +113,9 @@ def _chunks(messages, chunk_size, budget=None, prompt=""):
     for message in messages:
         joined = "\n\n".join(item.text for item in [*current, message])
         if current and (
-            (chunk_size > 0 and len(joined) > chunk_size) or not budget.fits(joined, prompt)
+            len(current) >= MAX_CHUNK_MESSAGES
+            or (chunk_size > 0 and len(joined) > chunk_size)
+            or not budget.fits(joined, prompt)
         ):
             result.append(current)
             current = []
@@ -289,6 +293,10 @@ async def _translate_chunk(
         try:
             return _parse_translation_response(response, expected, target_culture, checker)
         except ValueError as error:
+            if len(chunk) > 1:
+                if getattr(client, "_on_retry", None):
+                    client._on_retry("split", 0, 0, error, 0, True)
+                raise TranslationValidationError(str(error), response) from error
             last_error, last_response = error, response
             if getattr(client, "_on_retry", None):
                 client._on_retry(
@@ -623,17 +631,25 @@ async def translate_files(
     )
     semaphore = asyncio.Semaphore(concurrency)
 
-    for path, _, _, _ in pending:
-        if on_event:
-            on_event("started", path, {})
-        else:
-            print(f"Перевод: {path}", file=sys.stderr, flush=True)
+    started = set()
+    remaining = {path: 0 for path, _, _, _ in pending}
+    file_texts = {path: text for path, text, _, _ in pending}
+    for chunk in chunks:
+        for path in {owners[item.id][0] for item in chunk}:
+            remaining[path] += 1
 
     async def one(chunk):
         paths = dict.fromkeys(owners[item.id][0] for item in chunk)
         _current_file.set(next(iter(paths)))
         context = () if save_tokens else tuple(item for path in paths for item in contexts[path])
         async with semaphore:
+            for path in paths:
+                if path not in started:
+                    started.add(path)
+                    if on_event:
+                        on_event("started", path, {})
+                    else:
+                        print(f"Перевод: {path}", file=sys.stderr, flush=True)
             try:
                 result = await _safe_chunk(client, prompt, chunk, checker, budget, context)
                 return [(chunk, result, None)]
@@ -643,54 +659,56 @@ async def translate_files(
         middle = len(chunk) // 2
         return (await one(chunk[:middle])) + (await one(chunk[middle:]))
 
-    results = [
-        item for group in await asyncio.gather(*(one(chunk) for chunk in chunks)) for item in group
-    ]
     replacements = {path: {} for path, _, _, _ in pending}
     errors = {}
-    for chunk, result, error in results:
-        if error is not None:
-            for path in {owners[item.id][0] for item in chunk}:
-                errors.setdefault(path, error)
-            continue
-        assert result is not None
-        for item in chunk:
-            path, key = owners[item.id]
-            replacements[path][key] = _unpack_message(result[item.id], key)
-
+    file_failures = {}
     translated = changed = 0
-    for path, text, _, _ in pending:
-        completed = replacements[path]
-        file_changed = False
-        if completed and (allow_partial or path not in errors):
-            try:
-                file_changed = write_text_if_changed(path, _replace_messages(text, completed))
-                translated += len(completed)
-                changed += file_changed
-            except Exception as error:  # noqa: BLE001 — ошибка записи учитывается как ошибка файла.
-                errors[path] = error
-        if path in errors:
-            error = errors[path]
-            failures.append(
-                TranslationFailure(
-                    path,
-                    len(completed) if file_changed else 0,
-                    file_changed,
-                    str(error),
+    for task in asyncio.as_completed([one(chunk) for chunk in chunks]):
+        group = await task
+        touched = set()
+        for chunk, result, error in group:
+            touched.update(owners[item.id][0] for item in chunk)
+            if error is not None:
+                for path in {owners[item.id][0] for item in chunk}:
+                    errors.setdefault(path, error)
+                continue
+            assert result is not None
+            for item in chunk:
+                path, key = owners[item.id]
+                replacements[path][key] = _unpack_message(result[item.id], key)
+
+        for path in touched:
+            remaining[path] -= 1
+            if remaining[path]:
+                continue
+            text, completed = file_texts[path], replacements[path]
+            file_changed = False
+            if completed and (allow_partial or path not in errors):
+                try:
+                    file_changed = write_text_if_changed(path, _replace_messages(text, completed))
+                    translated += len(completed)
+                    changed += file_changed
+                except Exception as error:  # noqa: BLE001 — ошибка записи касается одного файла.
+                    errors[path] = error
+            if path in errors:
+                error = errors[path]
+                file_failures[path] = TranslationFailure(
+                    path, len(completed) if file_changed else 0, file_changed, str(error)
                 )
-            )
-            if on_event:
-                on_event(
-                    "failed",
-                    path,
-                    {
-                        "error": str(error),
-                        "source": text,
-                        "response": getattr(error, "ai_response", None),
-                    },
-                )
-        elif on_event:
-            on_event("completed", path, {"text": read_text(path), "messages": len(completed)})
+                if on_event:
+                    on_event(
+                        "failed",
+                        path,
+                        {
+                            "error": str(error),
+                            "source": text,
+                            "response": getattr(error, "ai_response", None),
+                        },
+                    )
+            elif on_event:
+                on_event("completed", path, {"text": read_text(path), "messages": len(completed)})
+
+    failures.extend(file_failures[path] for path, _, _, _ in pending if path in file_failures)
     return TranslationRunResult(
         translated, changed, tuple(item.path for item in failures), tuple(failures)
     )

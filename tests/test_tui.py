@@ -384,8 +384,9 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(app.total, 2)
                     self.assertEqual(len(app.failures), 1)
                     self.assertEqual(app.failures[0].path.name, "b.ftl")
-                    self.assertEqual(app.prompt_tokens + app.completion_tokens, 126)
-                    self.assertEqual(app.retry_tokens, 36)
+                    self.assertEqual(len(requests), 6)
+                    self.assertEqual(app.prompt_tokens + app.completion_tokens, 108)
+                    self.assertEqual(app.retry_tokens, 18)
                     self.assertIn(
                         "ПОВТОР",
                         "\n".join(line.text for line in app.query_one("#log", RichLog).lines),
@@ -455,7 +456,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(again.skipped, 2)
                         self.assertEqual(again.total, 1)
                         self.assertEqual(len(again.failures), 1)
-                self.assertEqual(len(requests), 9)
+                self.assertEqual(len(requests), 8)
                 (source.parent / "ru-RU" / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
                 edited = create_app(repo)
                 edited.error_log_path = repo / "translation-errors.log"
@@ -476,7 +477,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(edited.phase, "summary")
                     self.assertEqual(edited.success, 1)
                     self.assertEqual(edited.skipped, 1)
-                    self.assertEqual(len(requests), 14)
+                    self.assertEqual(len(requests), 12)
         finally:
             server.shutdown()
             server.server_close()

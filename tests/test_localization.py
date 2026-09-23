@@ -522,6 +522,10 @@ class LanguageTests(unittest.TestCase):
 
 
 class BudgetTests(unittest.TestCase):
+    def test_automatic_chunks_limit_message_count(self):
+        messages = list(message_map("\n".join(f"key-{i} = Hello" for i in range(101))).values())
+        self.assertEqual([len(chunk) for chunk in _chunks(messages, 0)], [100, 1])
+
     def test_chunks_use_manual_output_budget_with_margin(self):
         budget = OutputBudget(192, 0.65, 3, 16)
         messages = list(
@@ -825,6 +829,80 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(peak, 2)
         self.assertEqual(result.changed_files, 4)
+
+    async def test_finished_file_is_written_while_another_request_waits(self):
+        release = asyncio.Event()
+        fast_done = asyncio.Event()
+
+        class SlowClient(FakeClient):
+            async def chat(self, messages):
+                if "Hello" in messages[-1]["content"]:
+                    await release.wait()
+                return await super().chat(messages)
+
+        slow, fast = self.target / "slow.ftl", self.target / "fast.ftl"
+        self.write(slow, "slow = Hello\n")
+        self.write(fast, "fast = World\n")
+
+        def on_event(kind, path, _payload):
+            if kind == "completed" and path == fast:
+                fast_done.set()
+
+        with patch(
+            "ss14_localization.translate.OpenAICompatibleClient", return_value=SlowClient()
+        ):
+            task = asyncio.create_task(
+                translate_files(
+                    [slow, fast], "Prompt", 10, checker=self.checker, on_event=on_event
+                )
+            )
+            try:
+                await asyncio.wait_for(fast_done.wait(), 3)
+                self.assertEqual(fast.read_text(encoding="utf-8"), "fast = Мир\n")
+                self.assertEqual(slow.read_text(encoding="utf-8"), "slow = Hello\n")
+            finally:
+                release.set()
+                result = await task
+        self.assertEqual(result.changed_files, 2)
+
+    async def test_file_waits_for_all_its_chunks_before_writing(self):
+        release = asyncio.Event()
+        fast_reply = asyncio.Event()
+
+        class SlowClient(FakeClient):
+            async def chat(self, messages):
+                if "Hello" in messages[-1]["content"]:
+                    await release.wait()
+                result = await super().chat(messages)
+                fast_reply.set()
+                return result
+
+        path = self.target / "two-chunks.ftl"
+        original = "a = Hello\nb = World\n"
+        self.write(path, original)
+        with patch(
+            "ss14_localization.translate.OpenAICompatibleClient", return_value=SlowClient()
+        ):
+            task = asyncio.create_task(translate_files([path], "Prompt", 10, checker=self.checker))
+            try:
+                await asyncio.wait_for(fast_reply.wait(), 3)
+                await asyncio.sleep(0)
+                self.assertEqual(path.read_text(encoding="utf-8"), original)
+            finally:
+                release.set()
+                result = await task
+        self.assertEqual(result.changed_files, 1)
+        self.assertEqual(path.read_text(encoding="utf-8"), "a = Привет\nb = Мир\n")
+
+    async def test_invalid_multi_message_response_splits_without_full_retry(self):
+        paths = [self.target / "one.ftl", self.target / "two.ftl"]
+        self.write(paths[0], "a = Hello\n")
+        self.write(paths[1], "b = World\n")
+        client = FakeClient(invalid_first=True)
+        with patch("ss14_localization.translate.OpenAICompatibleClient", return_value=client):
+            result = await translate_files(paths, "Prompt", 0, checker=self.checker)
+        self.assertEqual(result.changed_files, 2)
+        self.assertEqual(len(client.calls), 3)
 
     async def test_same_keys_in_different_files_share_one_request(self):
         paths = [self.target / "one.ftl", self.target / "two.ftl"]
