@@ -633,13 +633,15 @@ def create_app(repo: Path):
         def _tick(self) -> None:
             if self.phase != "work" or not list(self.query("#eta")):
                 return
-            elapsed = monotonic() - self.stage_started
-            remaining = self.token_eta.remaining(monotonic()) if self.token_eta else None
-            eta = (
-                f"~{remaining:.0f} с"
-                if remaining is not None
-                else ("после первого файла" if self.token_eta else "—")
-            )
+            now = monotonic()
+            elapsed = now - self.stage_started
+            if self.token_eta:
+                remaining = self.token_eta.remaining(now)
+            elif self.done:
+                remaining = elapsed * max(0, self.total - self.done) / self.done
+            else:
+                remaining = None
+            eta = f"~{remaining:.0f} с" if remaining is not None else "после первого файла"
             self.query_one("#eta", Static).update(
                 f"Готово: {self.done}/{self.total}  ·  Прошло: {elapsed:.0f} с  ·  Осталось: {eta}"
             )

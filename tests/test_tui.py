@@ -10,7 +10,7 @@ from threading import Thread
 from unittest.mock import patch
 
 from textual.color import Color
-from textual.widgets import Checkbox, Input, OptionList, RichLog
+from textual.widgets import Checkbox, Input, OptionList, RichLog, Static
 
 from ss14_localization.tui import (
     TokenEta,
@@ -41,6 +41,22 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         eta.finish(large, 8)
         eta.finish(larger, 9)
         self.assertEqual(eta.remaining(9), 0)
+
+    async def test_preparation_eta_uses_completed_file_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "Resources" / "Locale" / "en-US"
+            source.mkdir(parents=True)
+            (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+            app = create_app(repo)
+            async with app.run_test():
+                app.phase = "work"
+                app._new_stage("Подготовка", 10)
+                app.done = 2
+                app.stage_started = 5
+                with patch("ss14_localization.tui.monotonic", return_value=10):
+                    app._tick()
+                self.assertIn("Осталось: ~20 с", str(app.query_one("#eta", Static).render()))
 
     def test_no_arguments_open_tui(self):
         from ss14_localization.cli import main
