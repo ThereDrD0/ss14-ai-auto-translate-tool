@@ -909,7 +909,6 @@ def create_app(repo: Path):
                     else None,
                     chunk_size=int(os.environ.get("TRANSLATE_CHUNK_SIZE", "0")),
                     concurrency=int(os.environ.get("TRANSLATE_CONCURRENCY", "2")),
-                    batch_size=int(os.environ.get("TRANSLATE_BATCH_SIZE", "0")),
                     dry_run=False,
                 )
                 checker, budget, prompt = _translation_settings(args)
