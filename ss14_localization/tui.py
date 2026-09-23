@@ -204,11 +204,16 @@ def _diff_lines(before: str, after: str):
     old, new = before.splitlines(), after.splitlines()
     rows = []
 
-    def row(mark, old_number, new_number, value, other=None):
+    def row(mark, number, value, other=None):
         color = {"-": "#a97979", "+": "#9bd3a9", " ": "#8799a6"}[mark]
-        result = Text(f"{old_number or '':>4} {new_number or '':>4} {mark} ", style=color)
+        background = "#613434" if mark == "-" else "#285b3c"
+        result = Text(f"{number:>4} {mark} ", style="#8799a6")
+        if mark != " ":
+            result.stylize(color, 5, 6)
         if other is None:
-            result.append(value, style=color)
+            if mark != " ":
+                result.stylize(f"{color} on {background}", 0, 4)
+            result.append(value, style=f"{color} on {background}" if mark != " " else None)
         else:
             pieces = re.split(r"(\s+)", value)
             opposite = re.split(r"(\s+)", other)
@@ -221,27 +226,27 @@ def _diff_lines(before: str, after: str):
             for index, piece in enumerate(pieces):
                 result.append(
                     piece,
-                    style=f"{color} on {'#613434' if mark == '-' else '#285b3c'}"
+                    style=f"{color} on {background}"
                     if index in changed and not piece.isspace()
-                    else color,
+                    else None,
                 )
         rows.append(result)
 
     for operation, a, b, c, d in SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
         if operation == "equal":
             for i, j in zip(range(a, b), range(c, d)):
-                row(" ", i + 1, j + 1, old[i])
+                row(" ", j + 1, old[i])
         elif operation == "replace":
             for i, j in zip_longest(range(a, b), range(c, d)):
                 if i is not None:
-                    row("-", i + 1, None, old[i], new[j] if j is not None else None)
+                    row("-", i + 1, old[i], new[j] if j is not None else None)
                 if j is not None:
-                    row("+", None, j + 1, new[j], old[i] if i is not None else None)
+                    row("+", j + 1, new[j], old[i] if i is not None else None)
         else:
             for i in range(a, b):
-                row("-", i + 1, None, old[i])
+                row("-", i + 1, old[i])
             for j in range(c, d):
-                row("+", None, j + 1, new[j])
+                row("+", j + 1, new[j])
     return rows
 
 
@@ -326,7 +331,7 @@ def create_app(repo: Path):
             Binding("f4", "toggle_log", "Журнал/проверка", priority=True),
             Binding("left", "previous_column", "Левая колонка", show=False),
             Binding("right", "next_column", "Правая колонка", show=False),
-            Binding("alt+enter", "show_summary", "Итоги", priority=True),
+            Binding("ctrl+enter", "show_summary", "Итоги", priority=True),
         ]
         CSS = """
         Screen { background: #111821; color: #d4dde7; }
@@ -423,7 +428,7 @@ def create_app(repo: Path):
                     yield OptionList(id="review-files")
                     yield RichLog(wrap=True, auto_scroll=False, id="review-diff")
                 yield Button("Журнал перевода · F4", id="review-log")
-                yield Button("К итогам · Alt+Enter", id="review-done")
+                yield Button("К итогам · Ctrl+Enter", id="review-done")
             with Vertical(id="summary"):
                 yield Static("Итоги перевода", classes="title")
                 with VerticalScroll(id="summary-scroll"):
@@ -1115,7 +1120,7 @@ def create_app(repo: Path):
             self.call_after_refresh(self._refresh_review)
             self.query_one("#hint", Static).update(
                 "Tab панели · ↑/↓ файлы или изменения · Space повтор · "
-                "Enter выбрать · F4 журнал · Alt+Enter итоги · Ctrl+C выход"
+                "Enter выбрать · F4 журнал · Ctrl+Enter итоги · Ctrl+C выход"
             )
 
         def _refresh_review(self):
@@ -1124,7 +1129,7 @@ def create_app(repo: Path):
             view.clear()
             index = files.highlighted if files.highlighted is not None else 0
             if index >= len(self.review_files):
-                view.write("Нет изменённых файлов. Alt+Enter — к итогам.")
+                view.write("Нет изменённых файлов. Ctrl+Enter — к итогам.")
                 return
             path = self.review_files[index]
             try:
@@ -1132,7 +1137,7 @@ def create_app(repo: Path):
             except OSError as error:
                 view.write(f"Ошибка чтения {path}: {error}")
                 return
-            view.write(f"{path.relative_to(repo)}  ·  старый / новый номер строки")
+            view.write(f"{path.relative_to(repo)}  ·  номер строки")
             for line in _diff_lines(before, after):
                 view.write(line)
             view.scroll_home(animate=False)

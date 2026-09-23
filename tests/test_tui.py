@@ -93,9 +93,23 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [row.plain.split()[-1] for row in rows], ["Hello", "Привет", "word", "word"]
         )
-        self.assertIn("   2", rows[2].plain)
+        self.assertTrue(rows[2].plain.startswith("   2 -     .desc"))
+        self.assertTrue(rows[3].plain.startswith("   2 +     .desc"))
         self.assertIn("    .desc", rows[2].plain)
-        self.assertTrue(any("on #285b3c" in str(span.style) for span in rows[-1].spans))
+        for row, word in zip(rows, ("Hello", "Привет", "Old", "New")):
+            highlighted = [span for span in row.spans if " on " in str(span.style)]
+            self.assertEqual(len(highlighted), 1)
+            self.assertEqual(row.plain[highlighted[0].start : highlighted[0].end], word)
+
+    def test_diff_does_not_highlight_shifted_line_numbers(self):
+        rows = _diff_lines("a\nb\nc\n", "a\nnew\nb\nc\n")
+        self.assertEqual([row.plain[:6] for row in rows], ["   1  ", "   2 +", "   3  ", "   4  "])
+        self.assertTrue(
+            any(span.start == 0 and " on " in str(span.style) for span in rows[1].spans)
+        )
+        self.assertTrue(
+            all(" on " not in str(span.style) for row in rows[2:] for span in row.spans)
+        )
 
     async def test_autoscroll_can_be_paused_while_log_grows(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -363,7 +377,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                             break
                     self.assertEqual(app.phase, "review")
                     self.assertIn("Сделай точнее", requests[-1]["messages"][0]["content"])
-                    await pilot.press("alt+enter")
+                    await pilot.press("ctrl+enter")
                     self.assertEqual(app.phase, "summary")
                     self.assertEqual(app.success, 1)
                     self.assertEqual(app.skipped, 1)
@@ -436,7 +450,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                                 break
                         await pilot.pause()
                         self.assertEqual(again.phase, "review")
-                        await pilot.press("alt+enter")
+                        await pilot.press("ctrl+enter")
                         self.assertEqual(again.phase, "summary")
                         self.assertEqual(again.skipped, 2)
                         self.assertEqual(again.total, 1)
@@ -458,7 +472,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                             break
                     await pilot.pause()
                     self.assertEqual(edited.phase, "review")
-                    await pilot.press("alt+enter")
+                    await pilot.press("ctrl+enter")
                     self.assertEqual(edited.phase, "summary")
                     self.assertEqual(edited.success, 1)
                     self.assertEqual(edited.skipped, 1)
