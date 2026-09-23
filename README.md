@@ -20,7 +20,25 @@
 
 ## Скриншоты
 
-заполнить с гита
+Выбор языка
+
+<img width="1920" height="1078" alt="image" src="https://github.com/user-attachments/assets/7eb3b95e-a30a-460f-8064-24eeccd45a06" />
+
+Выбор модели
+
+<img width="1920" height="1078" alt="image" src="https://github.com/user-attachments/assets/80398a4b-e651-400c-87a1-0837bd33a4bf" />
+
+Процесс подготовки и автоформатирования
+
+<img width="1920" height="1078" alt="image" src="https://github.com/user-attachments/assets/013ec976-3d1f-4912-b757-3252fe8401e2" />
+
+Окно перевода
+
+<img width="1920" height="1079" alt="image" src="https://github.com/user-attachments/assets/6e567436-df11-4934-adf4-e8db7eae2368" />
+
+Проверка перевода и просмотр изменений
+
+<img width="1898" height="887" alt="image" src="https://github.com/user-attachments/assets/92f6a2fa-64eb-421a-aef4-42225bc7ae63" />
 
 ## Quick start
 
