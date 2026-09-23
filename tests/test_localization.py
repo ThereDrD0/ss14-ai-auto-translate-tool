@@ -35,6 +35,7 @@ from ss14_localization.language import LanguageChecker, PassList, load_pass_list
 from ss14_localization.strings import prepare_target_files
 from ss14_localization.translate import (
     _chunks,
+    _parse_partial_response,
     _parse_translation_response,
     _replace_messages,
     _safe_chunk,
@@ -522,9 +523,9 @@ class LanguageTests(unittest.TestCase):
 
 
 class BudgetTests(unittest.TestCase):
-    def test_automatic_chunks_limit_message_count(self):
+    def test_automatic_chunks_follow_budget_without_key_count_limit(self):
         messages = list(message_map("\n".join(f"key-{i} = Hello" for i in range(101))).values())
-        self.assertEqual([len(chunk) for chunk in _chunks(messages, 0)], [100, 1])
+        self.assertEqual([len(chunk) for chunk in _chunks(messages, 0)], [101])
 
     def test_chunks_use_manual_output_budget_with_margin(self):
         budget = OutputBudget(192, 0.65, 3, 16)
@@ -579,7 +580,7 @@ class FakeClient:
             return "a = Привет {"
         payload = (
             messages[-2]["content"]
-            if messages[-1]["content"].startswith("Предыдущая попытка")
+            if messages[-1]["content"].startswith(("Предыдущая попытка", "Исправьте ошибки"))
             else messages[-1]["content"]
         )
         resource = parse_resource(payload)
@@ -592,6 +593,23 @@ class FakeClient:
 
 
 class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
+    def test_partial_response_keeps_valid_keys_after_bad_pass_term(self):
+        source = message_map("a = Hello\nb = NanoTrasen device\nc = World\n")
+        checker = LanguageChecker("en-US", "ru-RU", PassList(("NanoTrasen",)))
+        valid, invalid = _parse_partial_response(
+            "a = Привет\nb = Nanotrasen устройство\nc = Мир", source, checker=checker
+        )
+        self.assertEqual(set(valid), {"a", "c"})
+        self.assertEqual(set(invalid), {"b"})
+
+    def test_partial_response_keeps_keys_after_malformed_entry(self):
+        source = message_map("a = Hello\nb = World\nc = Hello\n")
+        valid, invalid = _parse_partial_response(
+            "a = Привет\nb = {\nc = Привет", source, checker=self.checker
+        )
+        self.assertEqual(set(valid), {"a", "c"})
+        self.assertEqual(set(invalid), {"b"})
+
     def test_replacement_formats_entity_translation(self):
         original = "ent-Box = Box\n    .desc = A box.\n    .suffix = Filled\n"
         replacement = "ent-Box = Коробка.\n    .desc = маленькая коробка\n    .suffix = особая"
@@ -894,6 +912,92 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.changed_files, 1)
         self.assertEqual(path.read_text(encoding="utf-8"), "a = Привет\nb = Мир\n")
 
+    async def test_valid_keys_are_saved_and_bad_keys_join_new_work(self):
+        retry_started = asyncio.Event()
+        release = asyncio.Event()
+
+        class PartialClient:
+            def __init__(self):
+                self.calls = []
+                self._on_retry = None
+
+            async def chat(self, messages):
+                payload = messages[-2]["content"] if len(messages) > 2 else messages[-1]["content"]
+                keys = list(message_map(payload))
+                self.calls.append(keys)
+                if len(self.calls) == 1:
+                    return f"{keys[0]} = Привет\n{keys[1]} = {{"
+                retry_started.set()
+                await release.wait()
+                return "\n".join(
+                    f"{key} = {'Мир' if key.endswith('-b') else 'Привет'}" for key in keys
+                )
+
+        first, second = self.target / "first.ftl", self.target / "second.ftl"
+        self.write(first, "a = Hello\nb = World\n")
+        self.write(second, "c = Hello\n")
+        client = PartialClient()
+        with patch("ss14_localization.translate.OpenAICompatibleClient", return_value=client):
+            task = asyncio.create_task(
+                translate_files([first, second], "Prompt", 70, checker=self.checker, concurrency=1)
+            )
+            try:
+                await asyncio.wait_for(retry_started.wait(), 3)
+                self.assertEqual(first.read_text(encoding="utf-8"), "a = Привет\nb = World\n")
+                self.assertEqual(second.read_text(encoding="utf-8"), "c = Hello\n")
+                self.assertEqual([key[-2:] for key in client.calls[1]], ["-b", "-c"])
+            finally:
+                release.set()
+                result = await task
+        self.assertEqual((result.translated_messages, result.changed_files), (3, 2))
+        self.assertEqual(first.read_text(encoding="utf-8"), "a = Привет\nb = Мир\n")
+        self.assertEqual(second.read_text(encoding="utf-8"), "c = Привет\n")
+
+    async def test_truncated_response_keeps_completed_keys(self):
+        class TruncatedClient:
+            def __init__(self):
+                self.calls = []
+                self._on_retry = None
+
+            async def chat(self, messages):
+                payload = messages[-2]["content"] if len(messages) > 2 else messages[-1]["content"]
+                keys = list(message_map(payload))
+                self.calls.append(keys)
+                if len(self.calls) == 1:
+                    raise ResponseTruncatedError("length", f"{keys[0]} = Привет\n{keys[1]} = {{")
+                return f"{keys[0]} = Мир"
+
+        path = self.target / "truncated.ftl"
+        self.write(path, "a = Hello\nb = World\n")
+        client = TruncatedClient()
+        with patch("ss14_localization.translate.OpenAICompatibleClient", return_value=client):
+            result = await translate_files([path], "Prompt", 0, checker=self.checker)
+        self.assertEqual((result.translated_messages, result.changed_files), (2, 1))
+        self.assertEqual([len(keys) for keys in client.calls], [2, 1])
+        self.assertEqual(path.read_text(encoding="utf-8"), "a = Привет\nb = Мир\n")
+
+    async def test_exhausted_retry_does_not_erase_valid_key(self):
+        class BrokenClient:
+            _on_retry = None
+
+            async def chat(self, messages):
+                payload = messages[-2]["content"] if len(messages) > 2 else messages[-1]["content"]
+                return "\n".join(
+                    f"{key} = {'Привет' if key.endswith('-a') else '{'}"
+                    for key in message_map(payload)
+                )
+
+        path = self.target / "partly-valid.ftl"
+        self.write(path, "a = Hello\nb = World\n")
+        with patch(
+            "ss14_localization.translate.OpenAICompatibleClient", return_value=BrokenClient()
+        ):
+            result = await translate_files([path], "Prompt", 0, checker=self.checker)
+        self.assertEqual(result.translated_messages, 1)
+        self.assertEqual(result.changed_files, 1)
+        self.assertEqual(result.failed_files, (path,))
+        self.assertEqual(path.read_text(encoding="utf-8"), "a = Привет\nb = World\n")
+
     async def test_invalid_multi_message_response_splits_without_full_retry(self):
         paths = [self.target / "one.ftl", self.target / "two.ftl"]
         self.write(paths[0], "a = Hello\n")
@@ -1027,7 +1131,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         result = await self.client(handler).chat([{"role": "user", "content": "a = Hello"}])
         self.assertEqual(result, "a = Привет")
         self.assertEqual(captured[0]["messages"][0]["content"], "a = Hello")
-        self.assertEqual(captured[0]["max_tokens"], 128000)
+        self.assertEqual(captured[0]["max_tokens"], 16384)
 
     async def test_luna_uses_completion_limit_without_temperature(self):
         httpx = import_or_install("httpx", "httpx>=0.27,<1")
@@ -1042,7 +1146,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         client._config.endpoints[0].model = "gpt-5.6-luna"
         await client.chat([{"role": "user", "content": "a = Hello"}])
-        self.assertEqual(captured[0]["max_completion_tokens"], 128000)
+        self.assertEqual(captured[0]["max_completion_tokens"], 16384)
         self.assertEqual(captured[0]["reasoning_effort"], "none")
         self.assertNotIn("temperature", captured[0])
 
@@ -1080,8 +1184,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 },
             )
         )
-        with self.assertRaises(ResponseTruncatedError):
+        with self.assertRaises(ResponseTruncatedError) as caught:
             await client.chat([])
+        self.assertEqual(caught.exception.partial_response, "a = incomplete")
 
     async def test_authentication_error_is_terminal(self):
         httpx = import_or_install("httpx", "httpx>=0.27,<1")

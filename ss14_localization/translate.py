@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import sys
+from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from .ai import AiConfig, OpenAICompatibleClient, ResponseTruncatedError
 from .budget import OutputBudget
 from .filesystem import read_text, write_text_if_changed
 from .fluent import (
+    MESSAGE_START_RE,
     FluentMessage,
     assert_structure,
     entries,
@@ -27,8 +29,6 @@ from .fluent import (
 from .language import LanguageChecker, PassList, load_pass_list
 
 _current_file = ContextVar("translation_file", default=None)
-# ponytail: большие ответы чаще ошибаются; увеличивать предел после замеров качества.
-MAX_CHUNK_MESSAGES = 100
 
 
 @dataclass(frozen=True)
@@ -107,21 +107,35 @@ def _split_messages(text, target_culture, checker=None):
     return pending, completed
 
 
+def _take_chunk(queue, chunk_size, budget, prompt, retry_caps=None):
+    current = []
+    while queue:
+        message = queue[0]
+        joined = "\n\n".join(item.text for item in [*current, message])
+        retry_cap = (
+            min(
+                (retry_caps.get(item.id, float("inf")) for item in [*current, message]),
+                default=float("inf"),
+            )
+            if retry_caps
+            else float("inf")
+        )
+        if current and (
+            (chunk_size > 0 and len(joined) > chunk_size)
+            or not budget.fits(joined, prompt)
+            or budget.estimated_output(joined) > retry_cap
+        ):
+            break
+        current.append(queue.popleft())
+    return current
+
+
 def _chunks(messages, chunk_size, budget=None, prompt=""):
     budget = budget or OutputBudget.from_env()
-    result, current = [], []
-    for message in messages:
-        joined = "\n\n".join(item.text for item in [*current, message])
-        if current and (
-            len(current) >= MAX_CHUNK_MESSAGES
-            or (chunk_size > 0 and len(joined) > chunk_size)
-            or not budget.fits(joined, prompt)
-        ):
-            result.append(current)
-            current = []
-        current.append(message)
-    if current:
-        result.append(current)
+    queue = deque(messages)
+    result = []
+    while queue:
+        result.append(_take_chunk(queue, chunk_size, budget, prompt))
     return result
 
 
@@ -213,8 +227,61 @@ def _parse_translation_response(response, expected, target_culture=None, checker
     return {key: serialize_entry(received[key]).rstrip("\n") for key in expected}
 
 
+def _parse_partial_response(response, expected, target_culture=None, checker=None):
+    try:
+        return _parse_translation_response(response, expected, target_culture, checker), {}
+    except ValueError:
+        pass
+
+    text = _strip_fence(response)
+    starts = list(MESSAGE_START_RE.finditer(text))
+    segments = {}
+    duplicates = set()
+    for index, match in enumerate(starts):
+        key = match.group("id")
+        if key not in expected:
+            continue
+        if key in segments:
+            duplicates.add(key)
+        else:
+            end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+            segments[key] = text[match.start() : end].rstrip()
+
+    valid, invalid = {}, {}
+    for key, source in expected.items():
+        if key in duplicates:
+            invalid[key] = TranslationValidationError(f"{key}: повторяющийся ключ в ответе")
+            continue
+        if key not in segments:
+            invalid[key] = TranslationValidationError(
+                f"{key}: ключ отсутствует в ответе", text[:2000] if len(expected) == 1 else None
+            )
+            continue
+        segment = segments[key]
+        try:
+            node = entries(parse_resource(segment))[key]
+            original = entries(parse_resource(source.text))[key]
+            node.comment = original.comment.clone() if original.comment else None
+            candidate = serialize_entry(node).rstrip("\n")
+            _validate_translated_message(source.text, candidate, checker)
+            valid[key] = candidate
+        except (KeyError, ValueError) as error:
+            invalid[key] = TranslationValidationError(f"{key}: {error}", segment)
+    return valid, invalid
+
+
 async def _translate_chunk(
-    client, prompt, chunk, target_culture, checker=None, budget=None, context=()
+    client,
+    prompt,
+    chunk,
+    target_culture,
+    checker=None,
+    budget=None,
+    context=(),
+    *,
+    partial=False,
+    retried=False,
+    feedback="",
 ):
     budget = budget or OutputBudget.from_env()
     payload = "\n\n".join(message.text for message in chunk)
@@ -254,6 +321,8 @@ async def _translate_chunk(
                 "Исправьте ошибку и верните полный FTL-блок."
             )
             messages.append({"role": "user", "content": feedback})
+        elif feedback:
+            messages.append({"role": "user", "content": feedback})
         if context:
             heading = (
                 "Примеры уже переведённых ключей. Используйте как контекст "
@@ -284,12 +353,14 @@ async def _translate_chunk(
                 "Источник, подсказка и обратная связь не помещаются в контекст"
             )
         if getattr(client, "_supports_retry", False):
-            response = await client.chat(messages, retry=index > 1)
+            response = await client.chat(messages, retry=retried or index > 1)
         else:
             response = await client.chat(messages)
         response = _strip_fence(response)
-        if budget.tokens(response) > budget.max_tokens:
+        if budget.tokens(response) > budget.max_tokens and not partial:
             raise ResponseTruncatedError("Ответ превышает указанное окно; блок будет уменьшен")
+        if partial:
+            return _parse_partial_response(response, expected, target_culture, checker)
         try:
             return _parse_translation_response(response, expected, target_culture, checker)
         except ValueError as error:
@@ -456,6 +527,63 @@ async def _safe_chunk(client, prompt, chunk, checker, budget, context=()):
         return first
 
 
+async def _safe_partial_chunk(
+    client, prompt, chunk, checker, budget, context=(), *, retried=False, feedback=""
+):
+    payload = "\n\n".join(message.text for message in chunk)
+    if len(chunk) == 1 and not budget.fits(payload, prompt):
+        try:
+            return (
+                await _translate_large_message(
+                    chunk[0], client, prompt, checker, budget, context=context
+                ),
+                {},
+            )
+        except ValueError as error:
+            return {}, {chunk[0].id: error}
+    try:
+        return await _translate_chunk(
+            client,
+            prompt,
+            chunk,
+            checker.target_culture,
+            checker,
+            budget,
+            context,
+            partial=True,
+            retried=retried,
+            feedback=feedback,
+        )
+    except ResponseTruncatedError as error:
+        if getattr(client, "_on_retry", None):
+            client._on_retry("split", 0, 0, error, 0, True)
+        if error.partial_response:
+            expected = {message.id: message for message in chunk}
+            valid, invalid = _parse_partial_response(
+                error.partial_response, expected, checker.target_culture, checker
+            )
+            if valid:
+                return valid, invalid
+        if len(chunk) == 1:
+            try:
+                return (
+                    await _translate_large_message(
+                        chunk[0], client, prompt, checker, budget.smaller(), context=context
+                    ),
+                    {},
+                )
+            except ValueError as single_error:
+                return {}, {chunk[0].id: single_error}
+        middle = len(chunk) // 2
+        first, bad_first = await _safe_partial_chunk(
+            client, prompt, chunk[:middle], checker, budget, context, retried=retried
+        )
+        second, bad_second = await _safe_partial_chunk(
+            client, prompt, chunk[middle:], checker, budget, context, retried=retried
+        )
+        return first | second, bad_first | bad_second
+
+
 def _replace_messages(text, replacements):
     resource = parse_resource(text)
     ast = syntax().ast
@@ -611,9 +739,8 @@ async def translate_files(
             item = _pack_message(message, len(packed))
             owners[item.id] = (path, message.id)
             packed.append(item)
-    chunks = _chunks(packed, chunk_size, budget, prompt)
     if dry_run:
-        for index, chunk in enumerate(chunks, 1):
+        for index, chunk in enumerate(_chunks(packed, chunk_size, budget, prompt), 1):
             raw = "\n\n".join(item.text for item in chunk)
             paths = {owners[item.id][0] for item in chunk}
             print(
@@ -629,88 +756,157 @@ async def translate_files(
         quiet=bool(on_event),
         on_retry=retry_callback,
     )
-    semaphore = asyncio.Semaphore(concurrency)
+    if concurrency < 1:
+        raise ValueError("Число одновременных запросов должно быть положительным")
+    response_attempts = int(os.environ.get("TRANSLATE_AI_RESPONSE_MAX_ATTEMPTS", "3"))
+    response_cooldown = float(os.environ.get("TRANSLATE_AI_RESPONSE_COOLDOWN_SECONDS", "0"))
+    if response_attempts < 0 or response_cooldown < 0:
+        raise ValueError("Число попыток и ожидание не могут быть отрицательными")
 
+    queue = deque(packed)
+    tasks = {}
     started = set()
-    remaining = {path: 0 for path, _, _, _ in pending}
+    finished = set()
+    attempts = {}
+    retry_reasons = {}
+    retry_caps = {}
+    remaining = {path: len(messages) for path, _, messages, _ in pending}
     file_texts = {path: text for path, text, _, _ in pending}
-    for chunk in chunks:
-        for path in {owners[item.id][0] for item in chunk}:
-            remaining[path] += 1
+    accepted_count = {path: 0 for path in remaining}
+    changed_paths = set()
+    errors = {}
+    file_failures = {}
+    translated = 0
 
-    async def one(chunk):
+    async def one(chunk, retried, feedback):
         paths = dict.fromkeys(owners[item.id][0] for item in chunk)
         _current_file.set(next(iter(paths)))
         context = () if save_tokens else tuple(item for path in paths for item in contexts[path])
-        async with semaphore:
-            for path in paths:
-                if path not in started:
-                    started.add(path)
-                    if on_event:
-                        on_event("started", path, {})
-                    else:
-                        print(f"Перевод: {path}", file=sys.stderr, flush=True)
-            try:
-                result = await _safe_chunk(client, prompt, chunk, checker, budget, context)
-                return [(chunk, result, None)]
-            except Exception as error:  # noqa: BLE001 — ошибка запроса или проверки относится к этому блоку.
-                if not isinstance(error, TranslationValidationError) or len(chunk) == 1:
-                    return [(chunk, None, error)]
-        middle = len(chunk) // 2
-        return (await one(chunk[:middle])) + (await one(chunk[middle:]))
+        for path in paths:
+            if path not in started:
+                started.add(path)
+                if on_event:
+                    on_event("started", path, {})
+                else:
+                    print(f"Перевод: {path}", file=sys.stderr, flush=True)
+        if retried and response_cooldown:
+            await asyncio.sleep(response_cooldown)
+        return await _safe_partial_chunk(
+            client, prompt, chunk, checker, budget, context, retried=retried, feedback=feedback
+        )
 
-    replacements = {path: {} for path, _, _, _ in pending}
-    errors = {}
-    file_failures = {}
-    translated = changed = 0
-    for task in asyncio.as_completed([one(chunk) for chunk in chunks]):
-        group = await task
-        touched = set()
-        for chunk, result, error in group:
-            touched.update(owners[item.id][0] for item in chunk)
-            if error is not None:
-                for path in {owners[item.id][0] for item in chunk}:
-                    errors.setdefault(path, error)
-                continue
-            assert result is not None
+    while queue or tasks:
+        while queue and len(tasks) < concurrency:
+            chunk = _take_chunk(queue, chunk_size, budget, prompt, retry_caps)
+            reasons = []
+            for item in chunk:
+                attempts[item.id] = attempts.get(item.id, 0) + 1
+                if item.id in retry_reasons:
+                    reasons.append(f"{item.id}: {retry_reasons.pop(item.id)}")
+            feedback = (
+                "Исправьте ошибки этих ключей из предыдущего ответа и верните весь "
+                "текущий блок FTL:\n" + "\n".join(reasons)
+                if reasons
+                else ""
+            )
+            task = asyncio.create_task(one(chunk, bool(reasons), feedback))
+            tasks[task] = chunk
+
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            chunk = tasks.pop(task)
+            fatal = False
+            try:
+                valid, invalid = task.result()
+            except Exception as error:  # noqa: BLE001 — сбой запроса касается этой пачки.
+                valid, invalid = {}, {item.id: error for item in chunk}
+                fatal = True
+
+            accepted = {}
+            retry = []
             for item in chunk:
                 path, key = owners[item.id]
-                replacements[path][key] = _unpack_message(result[item.id], key)
+                if item.id in valid:
+                    accepted.setdefault(path, {})[key] = _unpack_message(valid[item.id], key)
+                    retry_caps.pop(item.id, None)
+                    remaining[path] -= 1
+                    continue
+                error = invalid.get(
+                    item.id, TranslationValidationError(f"{item.id}: нет в ответе модели")
+                )
+                if not fatal and (response_attempts == 0 or attempts[item.id] < response_attempts):
+                    retry.append(item)
+                    retry_reasons[item.id] = str(error)[:200]
+                else:
+                    retry_caps.pop(item.id, None)
+                    errors.setdefault(path, error)
+                    remaining[path] -= 1
 
-        for path in touched:
-            remaining[path] -= 1
-            if remaining[path]:
-                continue
-            text, completed = file_texts[path], replacements[path]
-            file_changed = False
-            if completed and (allow_partial or path not in errors):
+            # ponytail: записываем принятые ключи сразу; файл может ждать другие ключи.
+            for path, replacements in accepted.items():
                 try:
-                    file_changed = write_text_if_changed(path, _replace_messages(text, completed))
-                    translated += len(completed)
-                    changed += file_changed
+                    updated = _replace_messages(file_texts[path], replacements)
+                    if write_text_if_changed(path, updated):
+                        changed_paths.add(path)
+                    file_texts[path] = updated
+                    accepted_count[path] += len(replacements)
+                    translated += len(replacements)
                 except Exception as error:  # noqa: BLE001 — ошибка записи касается одного файла.
                     errors[path] = error
-            if path in errors:
-                error = errors[path]
-                file_failures[path] = TranslationFailure(
-                    path, len(completed) if file_changed else 0, file_changed, str(error)
-                )
-                if on_event:
-                    on_event(
-                        "failed",
-                        path,
-                        {
-                            "error": str(error),
-                            "source": text,
-                            "response": getattr(error, "ai_response", None),
-                        },
+
+            if retry:
+                if not valid and len(chunk) > 1:
+                    smaller = (
+                        budget.estimated_output("\n\n".join(item.text for item in chunk)) // 2
                     )
-            elif on_event:
-                on_event("completed", path, {"text": read_text(path), "messages": len(completed)})
+                    for item in retry:
+                        retry_caps[item.id] = min(retry_caps.get(item.id, smaller), smaller)
+                for item in reversed(retry):
+                    queue.appendleft(item)
+                retry_callback = getattr(client, "_on_retry", None)
+                if retry_callback:
+                    _current_file.set(owners[retry[0].id][0])
+                    reason = ValueError(
+                        f"Повторяются {len(retry)} ключей; {retry_reasons[retry[0].id]}"
+                    )
+                    retry_callback(
+                        "validation",
+                        max(attempts[item.id] for item in retry),
+                        response_attempts,
+                        reason,
+                        response_cooldown,
+                        True,
+                    )
+
+            for path in {owners[item.id][0] for item in chunk}:
+                if remaining[path] or path in finished:
+                    continue
+                finished.add(path)
+                if path in errors:
+                    error = errors[path]
+                    file_failures[path] = TranslationFailure(
+                        path, accepted_count[path], path in changed_paths, str(error)
+                    )
+                    if on_event:
+                        on_event(
+                            "failed",
+                            path,
+                            {
+                                "error": str(error),
+                                "source": file_texts[path],
+                                "response": getattr(error, "ai_response", None),
+                            },
+                        )
+                elif on_event:
+                    on_event(
+                        "completed",
+                        path,
+                        {"text": file_texts[path], "messages": accepted_count[path]},
+                    )
 
     failures.extend(file_failures[path] for path, _, _, _ in pending if path in file_failures)
     return TranslationRunResult(
-        translated, changed, tuple(item.path for item in failures), tuple(failures)
+        translated, len(changed_paths), tuple(item.path for item in failures), tuple(failures)
     )
 
 

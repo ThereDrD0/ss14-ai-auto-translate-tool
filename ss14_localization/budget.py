@@ -17,7 +17,7 @@ def _encoding(name):
 
 @dataclass(frozen=True)
 class OutputBudget:
-    max_tokens: int = 128000
+    max_tokens: int = 16384
     safety: float = 0.65
     expansion: float = 3.0
     reserve: int = 128
@@ -43,7 +43,7 @@ class OutputBudget:
     @classmethod
     def from_env(cls):
         return cls(
-            int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "128000")),
+            int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "16384")),
             float(os.environ.get("TRANSLATE_AI_OUTPUT_SAFETY", "0.65")),
             float(os.environ.get("TRANSLATE_AI_OUTPUT_EXPANSION", "3")),
             int(os.environ.get("TRANSLATE_AI_OUTPUT_RESERVE", "128")),

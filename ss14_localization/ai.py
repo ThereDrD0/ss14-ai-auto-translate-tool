@@ -38,7 +38,7 @@ class AiConfig:
     timeout_seconds: int = 300
     cooldown_seconds: int = 60
     max_attempts: int = 0
-    max_output_tokens: int = 128000
+    max_output_tokens: int = 16384
 
     @classmethod
     def from_env(cls) -> AiConfig:
@@ -80,7 +80,7 @@ class AiConfig:
             timeout_seconds=int(os.environ.get("TRANSLATE_AI_TIMEOUT_SECONDS", "300")),
             cooldown_seconds=int(os.environ.get("TRANSLATE_AI_COOLDOWN_SECONDS", "60")),
             max_attempts=int(os.environ.get("TRANSLATE_AI_MAX_ATTEMPTS", "0")),
-            max_output_tokens=int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "128000")),
+            max_output_tokens=int(os.environ.get("TRANSLATE_AI_MAX_OUTPUT_TOKENS", "16384")),
         )
         if (
             config.timeout_seconds <= 0
@@ -233,10 +233,6 @@ class OpenAICompatibleClient:
                 )
                 if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
                     self._on_usage(prompt_tokens, completion_tokens, retry)
-            if data["choices"][0].get("finish_reason") == "length":
-                raise ResponseTruncatedError(
-                    "ИИ обрезал ответ по пределу выходного окна; блок будет уменьшен"
-                )
             content = data["choices"][0]["message"]["content"]
         except (ValueError, KeyError, IndexError, TypeError):
             raise TransientAiError(
@@ -245,6 +241,11 @@ class OpenAICompatibleClient:
 
         if not isinstance(content, str):
             raise TransientAiError("Сервер ИИ вернул ответ без текста.")
+
+        if data["choices"][0].get("finish_reason") == "length":
+            raise ResponseTruncatedError(
+                "ИИ обрезал ответ по пределу выходного окна; блок будет уменьшен", content
+            )
 
         return content
 
@@ -258,7 +259,9 @@ class TransientAiError(RuntimeError):
 
 
 class ResponseTruncatedError(RuntimeError):
-    pass
+    def __init__(self, message: str, partial_response: str | None = None):
+        super().__init__(message)
+        self.partial_response = partial_response
 
 
 def _split_secret_list(value: str) -> list[str]:

@@ -341,7 +341,7 @@ def assert_structure(source, target) -> None:
         )
 
 
-MESSAGE_START_RE = re.compile(r"^(?P<id>-?[A-Za-z][A-Za-z0-9_-]*)\s*=")
+MESSAGE_START_RE = re.compile(r"^(?P<id>-?[A-Za-z][A-Za-z0-9_-]*)[ \t]*=", re.MULTILINE)
 ATTRIBUTE_RE = re.compile(r"^\s+\.([A-Za-z][A-Za-z0-9_-]*)\s*=", re.MULTILINE)
 RICH_TAG_RE = re.compile(r"(?<!\\)\[(\/?)([A-Za-z][A-Za-z0-9_-]*)(?:[^\]]*)\]")
 COMMA_SPACING_RE = re.compile(r"(?<=\w)[ \t]*,[ \t]*(?=\w)")
