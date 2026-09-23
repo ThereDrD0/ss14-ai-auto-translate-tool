@@ -70,10 +70,11 @@ class PassList:
 
     def assert_preserved(self, source: str, target: str):
         original, translated = self.required(source), self.occurrences(target)
-        if original != translated:
+        missing = original - translated
+        if missing:
             raise ValueError(
                 f"ИИ изменил слово или название из pass-листа: "
-                f"исчезли {list((original - translated).elements())}, "
+                f"исчезли {list(missing.elements())}, "
                 f"появились {list((translated - original).elements())}"
             )
 

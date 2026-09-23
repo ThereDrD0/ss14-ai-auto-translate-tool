@@ -403,6 +403,12 @@ class LanguageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             passed.assert_preserved("Desert Eagle", "desert eagle")
 
+    def test_new_target_language_letter_does_not_break_pass_list(self):
+        passed = PassList(("F",))
+        passed.assert_preserved("Это «Р» или «Ф»?", "Is it «R» or «F»?")
+        with self.assertRaisesRegex(ValueError, "исчезли.*F"):
+            passed.assert_preserved("Press F", "Нажмите Ф")
+
     def test_english_plural_of_protected_term_requires_singular(self):
         passed = PassList(("ID", "APC"))
         self.assertEqual(passed.required("IDs APCs"), Counter({"ID": 1, "APC": 1}))
