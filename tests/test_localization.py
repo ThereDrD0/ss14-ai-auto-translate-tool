@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from contextlib import redirect_stdout
 import io
 import os
@@ -231,6 +232,27 @@ class LanguageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             passed.assert_preserved("Desert Eagle", "desert eagle")
 
+    def test_english_plural_of_protected_term_requires_singular(self):
+        passed = PassList(("ID", "APC"))
+        self.assertEqual(passed.required("IDs APCs"), Counter({"ID": 1, "APC": 1}))
+        self.assertTrue(passed.needs_normalization("IDs"))
+        passed.assert_preserved("IDs APCs", "ID APC")
+        with self.assertRaises(ValueError):
+            passed.assert_preserved("IDs", "IDs")
+        with self.assertRaises(ValueError):
+            passed.assert_preserved("IDs", "идентификаторы")
+        self.assertEqual(PassList(("ID", "red")).normalize_plurals("IDs [color=reds]текст[/color]"),
+                         "ID [color=reds]текст[/color]")
+        source = "a = IDs"
+        self.assertTrue(self.ru.needs_translation(entries(parse_resource(source))["a"]))
+        self.assertIn("ID", _parse_translation_response("a = ID", message_map(source), checker=self.ru)["a"])
+        mixed = "a = Возвращает IDs всех контейнеров сущности."
+        self.assertTrue(self.ru.needs_translation(entries(parse_resource(mixed))["a"]))
+        self.assertIn("Возвращает ID", _parse_translation_response(
+            "a = Возвращает ID всех контейнеров сущности.", message_map(mixed), checker=self.ru)["a"])
+        with self.assertRaisesRegex(ValueError, "переписал уже переведённое"):
+            _parse_translation_response("a = Показывает ID контейнеров.", message_map(mixed), checker=self.ru)
+
     def test_pass_list_ignores_contractions_and_markup(self):
         passed = PassList(("T", "red", "green"))
         passed.assert_preserved("It isn't [color=red]ready[/color].",
@@ -384,14 +406,14 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
         class TermsClient:
             async def chat(self, messages):
                 self.messages = messages
-                return "a = Получает IDs всех контейнеров.\nb = Получает строковый id контейнеров."
+                return "a = Получает ID всех контейнеров.\nb = Получает строковый id контейнеров."
 
-        checker = LanguageChecker("en-US", "ru-RU", PassList(("ID", "IDs", "NT")))
+        checker = LanguageChecker("en-US", "ru-RU", PassList(("ID", "NT")))
         client = TermsClient()
         chunk = list(message_map("a = Gets the IDs of all containers.\nb = Gets the string id of containers.").values())
         result = await _translate_chunk(client, "Prompt", chunk, "ru-RU", checker)
         self.assertEqual(set(result), {"a", "b"})
-        self.assertIn("a: 'IDs'", client.messages[0]["content"])
+        self.assertIn("a: 'ID'", client.messages[0]["content"])
         self.assertIn("b: 'id'", client.messages[0]["content"])
         self.assertNotIn("'NT'", client.messages[0]["content"])
 

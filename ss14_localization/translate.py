@@ -122,8 +122,13 @@ def _validate_translated_message(source, translated, checker=None, pass_list=Non
         if checker:
             from .fluent import pattern_text
             for original, translated in zip(source_patterns, target_patterns):
-                if checker.ratio(pattern_text(original)) >= checker.minimum_ratio and not original.equals(translated, ignored_fields=["span"]):
-                    raise TranslationValidationError(f"ИИ переписал уже переведённое или разрешённое поле для {key}")
+                original_text = pattern_text(original)
+                if checker.ratio(original_text) >= checker.minimum_ratio:
+                    changed = (checker.pass_list.normalize_plurals(original_text) != pattern_text(translated)
+                               if checker.pass_list.needs_normalization(original_text)
+                               else not original.equals(translated, ignored_fields=["span"]))
+                    if changed:
+                        raise TranslationValidationError(f"ИИ переписал уже переведённое или разрешённое поле для {key}")
         source_text = "\n".join(visible_parts(source_nodes[key]))
         target_text = "\n".join(visible_parts(target_nodes[key]))
         visible_text.append(target_text)
@@ -165,7 +170,7 @@ async def _translate_chunk(client, prompt, chunk, target_culture, checker=None, 
     if checker:
         for message in chunk:
             node = entries(parse_resource(message.text))[message.id]
-            terms = checker.pass_list.occurrences("\n".join(visible_parts(node)))
+            terms = checker.pass_list.required("\n".join(visible_parts(node)))
             if terms:
                 protected.append(f"{message.id}: {', '.join(repr(term) for term in terms.elements())}")
     if protected:
@@ -263,7 +268,7 @@ async def _translate_large_message(message, client, prompt, checker, budget, dep
     result_node = source_node.clone()
     for original, translated in zip(_text_slots(source_node), _text_slots(result_node)):
         original_text = _slot_text(original)
-        if checker.ratio(original_text) >= checker.minimum_ratio:
+        if checker.ratio(original_text) >= checker.minimum_ratio and not checker.pass_list.needs_normalization(original_text):
             continue
         render = lambda value: serialize_entry(_fragment_node(value))
         pieces = budget.split_text(original_text, render, prompt, checker.pass_list.pattern)

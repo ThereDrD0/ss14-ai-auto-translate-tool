@@ -23,7 +23,7 @@ class PassList:
 
     @property
     def pattern(self):
-        return _pass_pattern(self.terms)
+        return _pass_pattern(self.terms, plural=True)
 
     def strip(self, text: str) -> str:
         text = RICH_TAG_RE.sub(lambda match: " " if match.group(2).lower() in RICH_TAG_NAMES else match.group(0), text)
@@ -34,8 +34,25 @@ class PassList:
         text = RICH_TAG_RE.sub(lambda match: " " if match.group(2).lower() in RICH_TAG_NAMES else match.group(0), text)
         return Counter(match.group(0) for match in self.pattern.finditer(TAG_RE.sub(" ", text)))
 
+    def required(self, text: str):
+        return self.occurrences(self.normalize_plurals(text))
+
+    def normalize_plurals(self, text: str) -> str:
+        terms = {term.casefold() for term in self.terms}
+        markup = [(match.start(), match.end()) for match in TAG_RE.finditer(text)]
+        markup.extend((match.start(), match.end()) for match in RICH_TAG_RE.finditer(text)
+                      if match.group(2).lower() in RICH_TAG_NAMES)
+        def replace(match):
+            found = match.group(0)
+            return (found[:-1] if found.lower().endswith("s") and found[:-1].casefold() in terms and
+                    not any(left < match.end() and match.start() < right for left, right in markup) else found)
+        return self.pattern.sub(replace, text)
+
+    def needs_normalization(self, text: str) -> bool:
+        return self.required(text) != self.occurrences(text)
+
     def assert_preserved(self, source: str, target: str):
-        original, translated = self.occurrences(source), self.occurrences(target)
+        original, translated = self.required(source), self.occurrences(target)
         if original != translated:
             raise ValueError(f"ИИ изменил слово или название из pass-листа: "
                              f"исчезли {list((original - translated).elements())}, "
@@ -43,8 +60,10 @@ class PassList:
 
 
 @lru_cache(maxsize=16)
-def _pass_pattern(terms):
-    alternatives = "|".join(re.escape(term) for term in sorted(terms, key=len, reverse=True))
+def _pass_pattern(terms, plural=False):
+    alternatives = "|".join(re.escape(term) + ("s?" if plural and len(term) > 1 and
+                              term.isascii() and term[-1].isalpha() and not term.lower().endswith("s") else "")
+                        for term in sorted(terms, key=len, reverse=True))
     return re.compile(r"(?<![\w'’])(?:" + alternatives + r")(?![\w'’])" if alternatives else r"(?!)", re.IGNORECASE)
 
 
@@ -155,7 +174,8 @@ class LanguageChecker:
         return accepted / total
 
     def needs_translation(self, node) -> bool:
-        return self.ratio("\n".join(visible_parts(node))) < self.minimum_ratio
+        text = "\n".join(visible_parts(node))
+        return self.pass_list.needs_normalization(text) or self.ratio(text) < self.minimum_ratio
 
     def validate(self, node):
         self.validate_text("\n".join(visible_parts(node)))
