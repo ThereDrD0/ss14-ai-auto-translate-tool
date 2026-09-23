@@ -34,6 +34,7 @@ from ss14_localization.strings import prepare_target_files
 from ss14_localization.translate import (
     _chunks,
     _parse_translation_response,
+    _replace_messages,
     _safe_chunk,
     _translate_chunk,
     translate_file,
@@ -62,6 +63,44 @@ class Fixture(unittest.TestCase):
 
 
 class PreparationTests(Fixture):
+    def test_comment_translation_survives_different_spacing(self):
+        self.write(
+            self.source / "a.ftl",
+            "# English attached\na = Hello\n\n# English separate\n\nb = World\n",
+        )
+        self.write(
+            self.target / "a.ftl",
+            "# Русский отдельный\n\na = Привет\n\n# Русский прикреплённый\nb = Мир\n",
+        )
+
+        self.prepare()
+
+        result = (self.target / "a.ftl").read_text(encoding="utf-8")
+        self.assertIn("# Русский отдельный", result)
+        self.assertIn("# Русский прикреплённый", result)
+        self.assertNotIn("# English", result)
+        self.assertEqual(self.prepare().prepared_files, 0)
+
+    def test_preserves_translated_attached_and_section_comments(self):
+        self.write(
+            self.source / "a.ftl",
+            "# English title\na = Hello\n\n# Service\n\nb = World\nc = Bye\n",
+        )
+        self.write(
+            self.target / "a.ftl",
+            "# Русский заголовок\na = Привет\n\n# Сервис\n\nb = Мир\n",
+        )
+
+        self.prepare()
+
+        result = (self.target / "a.ftl").read_text(encoding="utf-8")
+        self.assertIn("# Русский заголовок", result)
+        self.assertIn("# Сервис", result)
+        self.assertNotIn("# English title", result)
+        self.assertNotIn("# Service", result)
+        self.assertIn("c = Bye", result)
+        self.assertEqual(self.prepare().prepared_files, 0)
+
     def test_preserves_target_blank_lines_when_adding_key(self):
         self.write(self.source / "a.ftl", "a = Hello\nb = World\nc = Bye\n")
         original = "a = Привет\n\n\nb = Мир\n"
@@ -477,6 +516,14 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self.checker = LanguageChecker("en-US", "ru-RU", load_pass_list())
+
+    def test_retranslation_keeps_existing_comment(self):
+        original = "# Русский комментарий\na = Привет\n\n# Сервис\n\nb = Мир\n"
+        updated = _replace_messages(original, {"a": "# English comment\na = Здравствуй"})
+        self.assertEqual(
+            updated,
+            "# Русский комментарий\na = Здравствуй\n\n# Сервис\n\nb = Мир\n",
+        )
 
     async def test_translation_preserves_blank_lines_between_keys(self):
         path = self.target / "a.ftl"

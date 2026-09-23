@@ -45,6 +45,8 @@ def _merged_entry(source, translated):
         return result
     if type(source) is not type(translated):
         raise ValueError(f"Конфликт типов ключа {entry_id(source)}")
+    if translated.comment:
+        result.comment = translated.comment.clone()
     if translated.value is not None:
         result.value = translated.value.clone()
     existing = {attribute.id.name: attribute for attribute in translated.attributes}
@@ -58,6 +60,19 @@ def _merged_entry(source, translated):
         if attribute.id.name not in {a.id.name for a in source.attributes}
     )
     return result
+
+
+def _comment_groups(resource):
+    ast = syntax().ast
+    groups = {}
+    pending = []
+    for node in resource.body:
+        if isinstance(node, ast.BaseComment):
+            pending.append(node)
+        elif isinstance(node, (ast.Message, ast.Term)):
+            groups[entry_id(node)] = pending
+            pending = []
+    return groups, pending
 
 
 def _read_resource(path, texts=None):
@@ -99,6 +114,7 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
     targets = {
         path: _read_resource(path, target_texts) for path in sorted(target_paths) if path.exists()
     }
+    target_comments = {path: _comment_groups(resource) for path, resource in targets.items()}
     known = {}
     origins = {}
     for path, resource in targets.items():
@@ -114,20 +130,34 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
     plans = {}
     added = moved = 0
     for path, source_resource in sources.items():
+        source_comments, source_trailing = _comment_groups(source_resource)
         resource = source_resource.clone()
-        for index, node in enumerate(resource.body):
-            if not isinstance(node, (ast.Message, ast.Term)):
+        body = []
+        for node in resource.body:
+            if isinstance(node, ast.BaseComment):
                 continue
             key = entry_id(node)
-            resource.body[index] = _merged_entry(node, known.get(key))
+            target_group = target_comments[origins[key]][0][key] if key in known else []
+            translated_comment = key in known and (known[key].comment or target_group)
+            comments = target_group if translated_comment else source_comments[key]
+            body.extend(comment.clone() for comment in comments)
+            merged = _merged_entry(node, known.get(key))
+            if translated_comment and not known[key].comment:
+                merged.comment = None
+            body.append(merged)
             added += key not in known
             moved += key in origins and origins[key] != path
         if path in targets:
-            resource.body.extend(
-                node.clone()
-                for node in targets[path].body
-                if isinstance(node, (ast.Message, ast.Term)) and entry_id(node) not in owners
-            )
+            for node in targets[path].body:
+                if isinstance(node, (ast.Message, ast.Term)) and entry_id(node) not in owners:
+                    body.extend(
+                        comment.clone() for comment in target_comments[path][0][entry_id(node)]
+                    )
+                    body.append(node.clone())
+            body.extend(comment.clone() for comment in target_comments[path][1])
+        else:
+            body.extend(comment.clone() for comment in source_trailing)
+        resource.body = body
         layout = targets.get(path, source_resource)
         original_text = target_texts[path] if path in targets else source_layouts[path]
         plans[path] = serialize_resource(resource, original_text, layout)
@@ -135,11 +165,13 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
     for path, resource in targets.items():
         if path in sources:
             continue
-        kept = [
-            node.clone()
-            for node in resource.body
-            if not isinstance(node, (ast.Message, ast.Term)) or entry_id(node) not in owners
-        ]
+        kept = []
+        comments, trailing = target_comments[path]
+        for node in resource.body:
+            if isinstance(node, (ast.Message, ast.Term)) and entry_id(node) not in owners:
+                kept.extend(comment.clone() for comment in comments[entry_id(node)])
+                kept.append(node.clone())
+        kept.extend(comment.clone() for comment in trailing)
         plans[path] = serialize_resource(ast.Resource(kept), target_texts[path], resource)
 
     # Validate the complete plan before touching any existing files.

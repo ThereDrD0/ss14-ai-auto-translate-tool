@@ -456,7 +456,9 @@ def _replace_messages(text, replacements):
             continue
         key = entry_id(node)
         if key in replacements:
-            replacement = serialize_entry(entries(parse_resource(replacements[key]))[key])
+            translated = entries(parse_resource(replacements[key]))[key]
+            translated.comment = node.comment.clone() if node.comment else None
+            replacement = serialize_entry(translated)
             pieces.extend((text[previous_end : node.span.start], replacement.rstrip("\n")))
             previous_end = node.span.end
     pieces.append(text[previous_end:])
