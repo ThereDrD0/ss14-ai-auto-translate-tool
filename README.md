@@ -34,7 +34,7 @@
 
 Окно перевода
 
-<img width="1920" height="1079" alt="image" src="https://github.com/user-attachments/assets/6e567436-df11-4934-adf4-e8db7eae2368" />
+<img width="1920" height="1078" alt="image" src="https://github.com/user-attachments/assets/455cee5a-b009-4899-8555-c7ec17d168ac" />
 
 Проверка перевода и просмотр изменений
 
