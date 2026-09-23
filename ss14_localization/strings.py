@@ -8,6 +8,7 @@ from .fluent import (
     FluentSyntaxError,
     entries,
     entry_id,
+    normalize_entity_message,
     normalize_resource_commas,
     parse_resource,
     serialize_resource,
@@ -160,6 +161,8 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
             body.extend(comment.clone() for comment in source_trailing)
         resource.body = body
         normalize_resource_commas(resource)
+        for node in resource.body:
+            normalize_entity_message(node)
         layout = targets.get(path, source_resource)
         original_text = target_texts[path] if path in targets else source_layouts[path]
         plans[path] = serialize_resource(resource, original_text, layout)
@@ -176,6 +179,8 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
         kept.extend(comment.clone() for comment in trailing)
         plan = ast.Resource(kept)
         normalize_resource_commas(plan)
+        for node in plan.body:
+            normalize_entity_message(node)
         plans[path] = serialize_resource(plan, target_texts[path], resource)
 
     # Validate the complete plan before touching any existing files.

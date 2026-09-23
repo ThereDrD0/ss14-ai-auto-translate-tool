@@ -232,6 +232,60 @@ def normalize_resource_commas(node) -> None:
             normalize_resource_commas(value)
 
 
+def _visible_text(value: str) -> str:
+    return TECHNICAL_TEXT_RE.sub(lambda match: " " * len(match.group()), value)
+
+
+def _capitalize_pattern(pattern, upper: bool) -> None:
+    ast = syntax().ast
+    for element in pattern.elements:
+        if not isinstance(element, ast.TextElement):
+            return  # Начальное выражение Fluent может задавать первую букву само.
+        for index, char in enumerate(_visible_text(element.value)):
+            if char.isspace() or char in ZERO_WIDTH_SPACE + "\"'«“([{—-":
+                continue
+            if char.isalpha():
+                changed = char.upper() if upper else char.lower()
+                element.value = element.value[:index] + changed + element.value[index + 1 :]
+            return
+
+
+def _normalize_pattern_end(pattern, description: bool) -> None:
+    ast = syntax().ast
+    for element in reversed(pattern.elements):
+        if not isinstance(element, ast.TextElement):
+            return  # Неизвестно, чем закончится подставляемое значение.
+        visible = _visible_text(element.value)
+        for index in range(len(visible) - 1, -1, -1):
+            char = visible[index]
+            if char.isspace() or char in "\"'»”)]}":
+                continue
+            if description:
+                if char not in ".,!?;:…":
+                    tail = pattern.elements[-1]
+                    trailing = len(tail.value) - len(tail.value.rstrip())
+                    offset = len(tail.value) - trailing
+                    tail.value = tail.value[:offset] + "." + tail.value[offset:]
+            elif char in ".,!?;:…":
+                element.value = element.value[:index] + element.value[index + 1 :]
+                continue
+            return
+
+
+def normalize_entity_message(node) -> None:
+    ast = syntax().ast
+    if not isinstance(node, ast.Message) or not node.id.name.startswith("ent-"):
+        return
+    if node.value is not None:
+        _capitalize_pattern(node.value, upper=False)
+        _normalize_pattern_end(node.value, description=False)
+    for attribute in node.attributes:
+        if attribute.id.name in {"desc", "suffix"}:
+            _capitalize_pattern(attribute.value, upper=True)
+            if attribute.id.name == "desc":
+                _normalize_pattern_end(attribute.value, description=True)
+
+
 def visible_parts(entry) -> list[str]:
     return [
         pattern_text(pattern)

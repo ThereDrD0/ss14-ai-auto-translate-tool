@@ -63,7 +63,7 @@ def _cache_path(repo: Path, source: str, target: str) -> Path:
 def _load_cache(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if data.get("version") == 4 else {}
+        return data if data.get("version") == 5 else {}
     except (OSError, ValueError, AttributeError):
         return {}
 
@@ -974,7 +974,7 @@ def create_app(repo: Path):
                         if name in target_hashes and target_hashes[name] == digest
                     }
                 cache = {
-                    "version": 4,
+                    "version": 5,
                     "source": source_digest,
                     "checker": checker_key,
                     "prepared": inventory if prep_safe else None,

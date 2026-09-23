@@ -80,12 +80,49 @@ class PreparationTests(Fixture):
         self.write(self.source / "a.ftl", "ent-BoxMagazineRifleM52 = magazine box\n")
         translated = (
             "ent-BoxMagazineRifleM52 = набор магазинов М-52\n"
-            "    .desc = коробка с магазинами 5,56мм для М-52 каждого стандартного типа.\n"
+            "    .desc = Коробка с магазинами 5,56мм для М-52 каждого стандартного типа.\n"
         )
         self.write(self.target / "a.ftl", translated)
 
         self.assertEqual(self.prepare().prepared_files, 0)
         self.assertEqual((self.target / "a.ftl").read_text(encoding="utf-8"), translated)
+
+    def test_formats_entity_translation_and_preserves_other_messages(self):
+        self.write(
+            self.source / "a.ftl",
+            "ent-Box = Box\n    .desc = A box.\n    .suffix = Filled\n"
+            "ent-Alert = Alert\n    .desc = Danger!\nother = Label\n",
+        )
+        self.write(
+            self.target / "a.ftl",
+            "ent-Box = Коробка!!!\n"
+            "    .desc = [color=red]маленькая коробка[/color]\n"
+            "    .suffix = «особая»\n"
+            "ent-Alert = Сигнал?\n    .desc = опасно!\nother = Как Есть!\n",
+        )
+
+        self.prepare()
+
+        self.assertEqual(
+            (self.target / "a.ftl").read_text(encoding="utf-8"),
+            "ent-Box = коробка\n"
+            "    .desc = [color=red]Маленькая коробка[/color].\n"
+            "    .suffix = «Особая»\n"
+            "ent-Alert = сигнал\n    .desc = Опасно!\nother = Как Есть!\n",
+        )
+        self.assertEqual(self.prepare().prepared_files, 0)
+
+    def test_entity_references_are_not_rewritten(self):
+        text = (
+            "ent-Child = { ent-BaseItem }\n"
+            "    .desc = { ent-BaseItem.desc }\n"
+            "    .suffix = { ent-BaseItem.suffix }\n"
+        )
+        self.write(self.source / "a.ftl", text)
+        self.write(self.target / "a.ftl", text)
+
+        self.assertEqual(self.prepare().prepared_files, 0)
+        self.assertEqual((self.target / "a.ftl").read_text(encoding="utf-8"), text)
 
     def test_comment_translation_survives_different_spacing(self):
         self.write(
@@ -551,6 +588,15 @@ class FakeClient:
 
 
 class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
+    def test_replacement_formats_entity_translation(self):
+        original = "ent-Box = Box\n    .desc = A box.\n    .suffix = Filled\n"
+        replacement = "ent-Box = Коробка.\n    .desc = маленькая коробка\n    .suffix = особая"
+
+        self.assertEqual(
+            _replace_messages(original, {"ent-Box": replacement}),
+            "ent-Box = коробка\n    .desc = Маленькая коробка.\n    .suffix = Особая\n",
+        )
+
     def test_replacement_normalizes_commas_without_touching_syntax(self):
         original = "a = CardBox ,Empty { NUMBER($count, minimumFractionDigits: 2) }\n"
         replacement = "a = Коробка ,пустая { NUMBER($count, minimumFractionDigits: 2) }"
