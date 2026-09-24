@@ -257,6 +257,14 @@ def _capitalize_pattern(pattern, upper: bool) -> None:
 
 def _normalize_pattern_end(pattern, description: bool) -> None:
     ast = syntax().ast
+    if not description and not any(
+        char.isalnum()
+        for element in pattern.elements
+        if isinstance(element, ast.TextElement)
+        for char in _visible_text(element.value)
+    ):
+        # ponytail: чисто символьное имя нельзя «очистить» до пустого значения FTL.
+        return
     for element in reversed(pattern.elements):
         if not isinstance(element, ast.TextElement):
             return  # Неизвестно, чем закончится подставляемое значение.

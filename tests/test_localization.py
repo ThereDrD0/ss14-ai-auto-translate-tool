@@ -66,6 +66,15 @@ class Fixture(unittest.TestCase):
 
 
 class PreparationTests(Fixture):
+    def test_entity_names_made_only_of_punctuation_survive(self):
+        names = "ent-Question = ???\nent-Ellipsis = ...\n"
+        self.write(self.source / "a.ftl", names)
+        self.write(self.target / "a.ftl", names)
+
+        self.prepare()
+
+        self.assertEqual((self.target / "a.ftl").read_text(encoding="utf-8"), names)
+
     def test_entity_names_keep_initial_acronyms(self):
         source = (
             "ent-NT = NT device\nent-C4 = C4 charge\n"
@@ -775,6 +784,16 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             _replace_messages(original, {"ent-Box": replacement}),
             "ent-Box = коробка\n    .desc = Маленькая коробка.\n    .suffix = Особая\n",
+        )
+
+    def test_replacement_keeps_symbol_only_entity_names(self):
+        original = "ent-Question = Question\nent-Ellipsis = Ellipsis\n"
+        self.assertEqual(
+            _replace_messages(
+                original,
+                {"ent-Question": "ent-Question = ???", "ent-Ellipsis": "ent-Ellipsis = ..."},
+            ),
+            "ent-Question = ???\nent-Ellipsis = ...\n",
         )
 
     def test_replacement_normalizes_commas_without_touching_syntax(self):
