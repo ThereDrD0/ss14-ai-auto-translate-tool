@@ -67,8 +67,15 @@ class Fixture(unittest.TestCase):
 
 class PreparationTests(Fixture):
     def test_entity_names_keep_initial_acronyms(self):
-        source = "ent-NT = NT device\nent-C4 = C4 charge\nent-Box = Box\n"
-        target = "ent-NT = НТ устройство\nent-C4 = C4 заряд\nent-Box = Коробка\n"
+        source = (
+            "ent-NT = NT device\nent-C4 = C4 charge\n"
+            "ent-Makak = M.A.K.A.K.\nent-S13 = S-13 weapon\nent-Box = Box\n"
+        )
+        target = (
+            "ent-NT = НТ устройство\nent-C4 = C4 заряд\n"
+            "ent-Makak = М.А.К.А.К.\nent-S13 = S-13 «Чёрная мамба»\n"
+            "ent-Box = Коробка\n"
+        )
         self.write(self.source / "a.ftl", source)
         self.write(self.target / "a.ftl", target)
 
@@ -76,7 +83,9 @@ class PreparationTests(Fixture):
 
         self.assertEqual(
             (self.target / "a.ftl").read_text(encoding="utf-8"),
-            "ent-NT = НТ устройство\nent-C4 = C4 заряд\nent-Box = коробка\n",
+            "ent-NT = НТ устройство\nent-C4 = C4 заряд\n"
+            "ent-Makak = М.А.К.А.К.\nent-S13 = S-13 «Чёрная мамба»\n"
+            "ent-Box = коробка\n",
         )
 
     def test_normalizes_commas_in_existing_translation(self):

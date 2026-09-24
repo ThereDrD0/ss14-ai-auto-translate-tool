@@ -247,7 +247,7 @@ def _capitalize_pattern(pattern, upper: bool) -> None:
                 continue
             if char.isalpha():
                 if not upper:
-                    word = re.match(r"[^\W_]+", visible[index:])
+                    word = re.match(r"[\w.-]+", visible[index:])
                     if word and len(word.group()) > 1 and word.group().isupper():
                         return
                 changed = char.upper() if upper else char.lower()
@@ -272,6 +272,8 @@ def _normalize_pattern_end(pattern, description: bool) -> None:
                     offset = len(tail.value) - trailing
                     tail.value = tail.value[:offset] + "." + tail.value[offset:]
             elif char in ".,!?;:…":
+                if char == "." and re.search(r"(?:[^\W\d_]\.){2,}$", visible[: index + 1]):
+                    return
                 element.value = element.value[:index] + element.value[index + 1 :]
                 continue
             return
