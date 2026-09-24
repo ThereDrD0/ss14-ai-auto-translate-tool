@@ -356,6 +356,7 @@ def create_app(repo: Path):
             Binding("f2", "toggle_auto_scroll", "Автопрокрутка", priority=True),
             Binding("f3", "toggle_save_tokens", "Экономия токенов", priority=True),
             Binding("f4", "toggle_log", "Журнал/проверка", priority=True),
+            Binding("f5", "show_summary", "Итоги", priority=True),
             Binding("left", "previous_column", "Левая колонка", show=False),
             Binding("right", "next_column", "Правая колонка", show=False),
             Binding("ctrl+enter", "show_summary", "Итоги", priority=True),
@@ -493,7 +494,7 @@ def create_app(repo: Path):
                     yield RichLog(wrap=True, auto_scroll=False, id="review-diff")
                 with Horizontal(id="review-actions"):
                     yield Button("← Журнал перевода · F4", id="review-log")
-                    yield Button("К итогам · Ctrl+Enter →", id="review-done")
+                    yield Button("К итогам · F5 →", id="review-done")
             with Vertical(id="summary"):
                 yield Static("Итоги перевода", classes="title")
                 with VerticalScroll(id="summary-scroll"):
@@ -899,7 +900,7 @@ def create_app(repo: Path):
                         source = failure.get("source") or "Исходный ключ недоступен"
                         self._log(
                             "ОШИБКА", path,
-                            f"Ответ ИИ:\n{response}\nОригинал:\n{source}",
+                            f"Причина: {failure['error']}\nОтвет ИИ:\n{response}\nОригинал:\n{source}",
                             payload.get("full_source", source),
                             (
                                 "Ответ ИИ:\n"
@@ -945,7 +946,7 @@ def create_app(repo: Path):
             if source is not None:
                 self._log(
                     "ПОВТОР" if will_retry else "ОШИБКА", path,
-                    f"Ответ ИИ:\n{response or 'Ответ не получен'}\nОригинал:\n{source}",
+                    f"Причина: {detail}\nОтвет ИИ:\n{response or 'Ответ не получен'}\nОригинал:\n{source}",
                     source,
                     f"Ответ ИИ:\n{full_response or response or 'Ответ не получен'}\nПричина: {detail}",
                 )
@@ -1205,7 +1206,7 @@ def create_app(repo: Path):
             self.call_after_refresh(self._refresh_review)
             self.query_one("#hint", Static).update(
                 "Tab панели · ↑/↓ файлы или изменения · Space повтор · "
-                "Enter выбрать · F4 журнал · Ctrl+Enter итоги · Ctrl+C выход"
+                "Enter выбрать · F4 журнал · F5 итоги · Ctrl+C выход"
             )
 
         def _refresh_review(self):
@@ -1214,7 +1215,7 @@ def create_app(repo: Path):
             view.clear()
             index = files.highlighted if files.highlighted is not None else 0
             if index >= len(self.review_files):
-                view.write("Нет изменённых файлов. Ctrl+Enter — к итогам.")
+                view.write("Нет изменённых файлов. F5 — к итогам.")
                 return
             path = self.review_files[index]
             try:

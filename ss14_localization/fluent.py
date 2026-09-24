@@ -241,10 +241,15 @@ def _capitalize_pattern(pattern, upper: bool) -> None:
     for element in pattern.elements:
         if not isinstance(element, ast.TextElement):
             return  # Начальное выражение Fluent может задавать первую букву само.
-        for index, char in enumerate(_visible_text(element.value)):
+        visible = _visible_text(element.value)
+        for index, char in enumerate(visible):
             if char.isspace() or char in ZERO_WIDTH_SPACE + "\"'«“([{—-":
                 continue
             if char.isalpha():
+                if not upper:
+                    word = re.match(r"[^\W_]+", visible[index:])
+                    if word and len(word.group()) > 1 and word.group().isupper():
+                        return
                 changed = char.upper() if upper else char.lower()
                 element.value = element.value[:index] + changed + element.value[index + 1 :]
             return

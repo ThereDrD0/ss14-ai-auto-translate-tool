@@ -262,6 +262,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Ответ ИИ:\na = {\nb = Monde", logged)
             self.assertIn("Причина: ошибка формата", logged)
             self.assertIn("Оригинал:\nb = World", logged)
+            self.assertTrue(all("Причина:" in item[2] for item in app.log_items if item[0] == "ОШИБКА"))
 
     async def test_exit_during_model_loading_has_no_thread_error(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -353,6 +354,10 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("f4")
                 await pilot.pause()
                 self.assertEqual(app.phase, "review")
+                await pilot.press("f5")
+                self.assertEqual(app.phase, "summary")
+                app._show_review()
+                await pilot.pause()
                 await pilot.click("#review-done")
                 self.assertEqual(app.phase, "summary")
 
@@ -601,7 +606,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                         if item[0] == "ОШИБКА" and item[1] and item[1].name == "b.ftl"
                     )
                     self.assertIn("Оригинал:\nb = Hello", failure[2])
-                    self.assertNotIn("Причина:", failure[2])
+                    self.assertIn("Причина:", failure[2])
                     self.assertIsNotNone(failure[3])
                     self.assertIsNotNone(failure[4])
                     await pilot.press("q")

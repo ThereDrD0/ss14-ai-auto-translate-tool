@@ -66,6 +66,19 @@ class Fixture(unittest.TestCase):
 
 
 class PreparationTests(Fixture):
+    def test_entity_names_keep_initial_acronyms(self):
+        source = "ent-NT = NT device\nent-C4 = C4 charge\nent-Box = Box\n"
+        target = "ent-NT = НТ устройство\nent-C4 = C4 заряд\nent-Box = Коробка\n"
+        self.write(self.source / "a.ftl", source)
+        self.write(self.target / "a.ftl", target)
+
+        self.prepare()
+
+        self.assertEqual(
+            (self.target / "a.ftl").read_text(encoding="utf-8"),
+            "ent-NT = НТ устройство\nent-C4 = C4 заряд\nent-Box = коробка\n",
+        )
+
     def test_normalizes_commas_in_existing_translation(self):
         self.write(self.source / "a.ftl", "a = CardBox ,Empty\n")
         self.write(self.target / "a.ftl", "a = Коробка ,пустая\n")
@@ -504,6 +517,15 @@ class LanguageTests(unittest.TestCase):
         self.assertIn("Hello2", self.ru.pass_list.strip("Hello2"))  # noqa: B005 — метод PassList.
         self.assertLess(self.ru.ratio("SP-91-RC Compact submachine gun"), 0.5)
         self.assertLess(self.ru.ratio("LSE-400b English description"), 0.5)
+
+    def test_hex_colors_do_not_count_as_untranslated_words(self):
+        for color in ("#ABCDEF", "#a1b2c3", "#ABC", "#AABBCCDD"):
+            with self.subTest(color=color):
+                self.assertEqual(self.ru.ratio(color), 1)
+                self.assertFalse(
+                    self.ru.needs_translation(entries(parse_resource(f"a = {color}"))["a"])
+                )
+        self.assertLess(self.ru.ratio("English description #ABCDEF"), 0.8)
 
     def test_response_language_share_is_combined_across_messages(self):
         source = "code = SP-91-RC\ndescription = Compact submachine gun.\n"

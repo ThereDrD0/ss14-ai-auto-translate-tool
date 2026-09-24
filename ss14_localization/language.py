@@ -15,6 +15,9 @@ TAG_RE = re.compile(r"</?[^>]+>|https?://\S+")
 MODEL_CODE_RE = re.compile(
     r"(?<![\w-])(?=[A-Z0-9-]*\d)[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*[a-z]?(?![\w-])"
 )
+HEX_COLOR_RE = re.compile(
+    r"(?<![\w#])#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})(?!\w)"
+)
 
 
 @dataclass(frozen=True)
@@ -32,7 +35,7 @@ class PassList:
             text,
         )
         text = self.pattern.sub(" ", TAG_RE.sub(" ", text))
-        return MODEL_CODE_RE.sub(" ", text)
+        return MODEL_CODE_RE.sub(" ", HEX_COLOR_RE.sub(" ", text))
 
     def occurrences(self, text: str):
         text = RICH_TAG_RE.sub(
