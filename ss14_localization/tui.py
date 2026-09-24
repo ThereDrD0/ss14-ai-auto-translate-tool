@@ -362,6 +362,18 @@ def create_app(repo: Path):
         #review-files { width: 32%; }
         #review-diff { width: 68%; height: 1fr; border: round #506474; background: #18232e; }
         #review-columns { height: 1fr; }
+        #review Button {
+            height: 3;
+            margin: 1 0 0 0;
+            color: #d4dde7;
+            background: #243746;
+            border: round #506474;
+        }
+        #review Button:hover, #review Button:focus {
+            color: #ffffff;
+            background: #355467;
+            border: round #83b4c7;
+        }
         #hint { height: 2; background: #1c2b39; color: #c3d1da; padding: 0 1; }
         #summary-scroll { height: 1fr; }
         """
