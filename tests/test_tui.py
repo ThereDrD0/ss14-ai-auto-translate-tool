@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 import os
+import re
 import tempfile
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -111,6 +112,50 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(" on " not in str(span.style) for row in rows[2:] for span in row.spans)
         )
+
+    async def test_tui_colors_follow_project_palette(self):
+        tool_root = Path(__file__).resolve().parents[1]
+        palette = dict(re.findall(
+            r"^\| ([a-z_]+) \| `(#[0-9a-fA-F]{6})` \|",
+            (tool_root / "TUI_PALETTE.md").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        ))
+        used = set(re.findall(
+            r"#[0-9a-fA-F]{6}\b",
+            (tool_root / "ss14_localization" / "tui.py").read_text(encoding="utf-8"),
+        ))
+        self.assertTrue(used <= set(palette.values()))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "Resources" / "Locale" / "en-US"
+            target = source.parent / "ru-RU"
+            source.mkdir(parents=True)
+            target.mkdir()
+            (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+            path = target / "a.ftl"
+            path.write_text("a = Привет\n", encoding="utf-8")
+            app = create_app(repo)
+            app.review_files = [path]
+            app.review_before = {path: "a = Hello\n"}
+            async with app.run_test() as pilot:
+                app.query_one("#choose").display = False
+                app._show_review()
+                await pilot.pause()
+                button = app.query_one("#review-log", Button)
+                self.assertEqual(button.styles.background, Color.parse(palette["button"]))
+                self.assertEqual(button.styles.color, Color.parse(palette["text"]))
+                await pilot.hover("#review-log", offset=(2, 1))
+                await pilot.pause()
+                self.assertEqual(button.styles.background, Color.parse(palette["selected"]))
+                app._ask_retranslate()
+                await pilot.pause()
+                send = app.screen.query_one("#prompt-send", Button)
+                self.assertEqual(send.styles.background, Color.parse(palette["selected"]))
+                self.assertEqual(
+                    app.screen.query_one("#prompt-input", Input).styles.background,
+                    Color.parse(palette["screen"]),
+                )
 
     async def test_autoscroll_can_be_paused_while_log_grows(self):
         with tempfile.TemporaryDirectory() as temporary:

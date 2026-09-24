@@ -380,10 +380,17 @@ class LanguageTests(unittest.TestCase):
             locale = root / "Resources" / "Locale" / "en-US"
             self.assertTrue(is_pass_path(locale / "station" / "name.ftl", root))
             self.assertTrue(is_pass_path(locale / "_strings" / "name.ftl", root))
+            self.assertTrue(is_pass_path(locale / "_prototypes" / "actions" / "name.ftl", root))
             self.assertFalse(is_pass_path(locale / "_sunrise" / "name.ftl", root))
             self.assertFalse(is_pass_path(locale / "_starlight" / "name.ftl", root))
-            with patch.dict(os.environ, {"TRANSLATE_PASS_PATHS": "Resources/Locale/fr-FR/private"}):
-                self.assertTrue(is_pass_path(locale.parent / "fr-FR" / "private" / "name.ftl", root))
+            self.assertFalse(is_pass_path(locale / "_prototypes" / "_sunrise" / "name.ftl", root))
+            self.assertFalse(is_pass_path(locale / "_strings" / "_sunrise" / "name.ftl", root))
+            with patch.dict(
+                os.environ, {"TRANSLATE_PASS_PATHS": "Resources/Locale/fr-FR/private"}
+            ):
+                self.assertTrue(
+                    is_pass_path(locale.parent / "fr-FR" / "private" / "name.ftl", root)
+                )
 
     def test_preparation_does_not_rewrite_upstream(self):
         from ss14_localization.strings import prepare_target_files
@@ -395,12 +402,86 @@ class LanguageTests(unittest.TestCase):
             for folder in ("station", "_strings", "_sunrise"):
                 (source / folder).mkdir(parents=True)
                 (target / folder).mkdir(parents=True)
-                (source / folder / "name.ftl").write_text(f"{folder.lstrip('_')} = Source\n", encoding="utf-8")
-                (target / folder / "name.ftl").write_text(f"{folder.lstrip('_')} = Target\n", encoding="utf-8")
+                (source / folder / "name.ftl").write_text(
+                    f"{folder.lstrip('_')} = Source\n", encoding="utf-8"
+                )
+                (target / folder / "name.ftl").write_text(
+                    f"{folder.lstrip('_')} = Target\n", encoding="utf-8"
+                )
+            for folder, key in (
+                ("_prototypes/actions", "upstream"),
+                ("_prototypes/_sunrise", "project"),
+            ):
+                (source / folder).mkdir(parents=True)
+                (target / folder).mkdir(parents=True)
+                (source / folder / "item.ftl").write_text(f"{key} = Source\n", encoding="utf-8")
+                (target / folder / "item.ftl").write_text(
+                    f"{key} = Target ,raw\n", encoding="utf-8"
+                )
             result = prepare_target_files(source, target, [Path(".")], repo_root=root)
             self.assertEqual((target / "station" / "name.ftl").read_text(), "station = Target\n")
             self.assertEqual((target / "_strings" / "name.ftl").read_text(), "strings = Target\n")
-            self.assertEqual(result.target_files, (target / "_sunrise" / "name.ftl",))
+            self.assertEqual(
+                (target / "_prototypes/actions/item.ftl").read_text(),
+                "upstream = Target ,raw\n",
+            )
+            self.assertEqual(
+                (target / "_prototypes/_sunrise/item.ftl").read_text(),
+                "project = Target, raw\n",
+            )
+            self.assertEqual(
+                set(result.target_files),
+                {target / "_sunrise/name.ftl", target / "_prototypes/_sunrise/item.ftl"},
+            )
+
+    def test_upstream_containers_are_not_formatted(self):
+        from ss14_localization.cli import main
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            locale = root / "Resources" / "Locale" / "en-US"
+            protected = (
+                locale / "actions" / "plain.ftl",
+                locale / "_prototypes" / "actions" / "prototype.ftl",
+                locale / "_strings" / "common.ftl",
+            )
+            projects = (
+                locale / "_sunrise" / "project.ftl",
+                locale / "_prototypes" / "_sunrise" / "prototype.ftl",
+                locale / "_strings" / "_sunrise" / "string.ftl",
+            )
+            original = b"\n\nmessage = Hello\n\n\n"
+            for path in (*protected, *projects):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(original)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    main(["--repo-root", str(root), "normalize", "--culture", "en-US"]), 0
+                )
+            self.assertTrue(all(path.read_bytes() == original for path in protected))
+            self.assertTrue(all(path.read_bytes() != original for path in projects))
+
+    def test_protected_source_can_prepare_another_language(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "Resources" / "Locale" / "en-US"
+            target = source.parent / "fr-FR"
+            originals = {}
+            for relative, text in (
+                ("_prototypes/actions/upstream.ftl", b"upstream = Original\n"),
+                ("_strings/common.ftl", b"common = Original\n"),
+            ):
+                path = source / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(text)
+                originals[path] = text
+            with redirect_stdout(io.StringIO()):
+                result = prepare_target_files(source, target, [Path(".")], repo_root=root)
+            self.assertEqual(len(result.target_files), 2)
+            self.assertTrue(all(path.read_bytes() == text for path, text in originals.items()))
+            self.assertTrue(
+                all((target / path.relative_to(source)).is_file() for path in originals)
+            )
 
     def test_language_share_is_combined_across_fields(self):
         text = (

@@ -13,8 +13,10 @@ def is_pass_path(path: Path, repo_root: Path) -> bool:
     upstream = (repo_root / DEFAULT_LOCALE_ROOT / "en-US").resolve()
     if path == upstream or upstream in path.parents:
         relative = path.relative_to(upstream)
-        if not relative.parts or not (
-            relative.parts[0].startswith("_") and relative.parts[0] != "_strings"
+        # ponytail: _prototypes and _strings group files; nested _project folders stay editable.
+        if not any(
+            part.startswith("_") and part.casefold() not in {"_prototypes", "_strings"}
+            for part in relative.parts[:-1]
         ):
             return True
     extra = os.environ.get("TRANSLATE_PASS_PATHS", "")
