@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import tempfile
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from unittest.mock import patch
 
 from textual.color import Color
@@ -169,6 +170,81 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("Привет", "\n".join(line.text for line in log.lines))
                 await pilot.click("#log", offset=(5, 1))
                 self.assertFalse(app.log_items[0][5])
+
+    async def test_error_log_keeps_full_details_after_exit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "Resources" / "Locale" / "en-US"
+            source.mkdir(parents=True)
+            (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+            app = create_app(repo)
+            app.error_log_path = repo / "translation-errors.log"
+            async with app.run_test() as pilot:
+                app.phase = "work"
+                app._new_stage("Перевод", 1)
+                app._retry_event(
+                    source / "a.ftl", "validation", 1, 2, ValueError("ошибка формата"),
+                    0, True, "a = Hello", "a = {",
+                )
+                app._translation_event(
+                    "failed", source / "a.ftl",
+                    {
+                        "error": "ошибка формата",
+                        "failures": [
+                            {
+                                "error": "ошибка формата",
+                                "source": "a = Hello",
+                                "response": "a = {",
+                                "full_response": "a = {\nb = Monde",
+                            },
+                            {
+                                "error": "не тот язык",
+                                "source": "b = World",
+                                "response": "b = Monde",
+                                "full_response": "a = {\nb = Monde",
+                            },
+                        ],
+                        "full_source": "a = Hello\nb = World",
+                    },
+                )
+                await pilot.press("ctrl+c")
+                self.assertFalse(app.is_running)
+            logged = app.error_log_path.read_text(encoding="utf-8")
+            self.assertIn("[ПОВТОР]", logged)
+            self.assertIn("[ОШИБКА]", logged)
+            self.assertEqual(logged.count("[ОШИБКА]"), 2)
+            self.assertIn("Исходный текст:\na = Hello\nb = World", logged)
+            self.assertIn("Ответ ИИ:\na = {\nb = Monde", logged)
+            self.assertIn("Причина: ошибка формата", logged)
+            self.assertIn("Оригинал:\nb = World", logged)
+
+    async def test_exit_during_model_loading_has_no_thread_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "Resources" / "Locale" / "en-US"
+            source.mkdir(parents=True)
+            (source / "a.ftl").write_text("a = Hello\n", encoding="utf-8")
+            entered, release = Event(), Event()
+            errors = []
+
+            def slow_models(_config, on_error=None):
+                entered.set()
+                release.wait(3)
+                return {"model": ()}
+
+            app = create_app(repo)
+            with (
+                patch("ss14_localization.tui.fetch_models", side_effect=slow_models),
+                patch("ss14_localization.tui.AiConfig.from_env"),
+                patch("threading.excepthook", side_effect=lambda args: errors.append(args.exc_value)),
+            ):
+                async with app.run_test() as pilot:
+                    await pilot.press("enter")
+                    self.assertTrue(entered.wait(1))
+                    await pilot.press("ctrl+c")
+                release.set()
+                await asyncio.sleep(0.1)
+            self.assertFalse(errors)
 
     async def test_review_changes_with_file_selection_and_done_button(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -425,7 +501,15 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("b.ftl", error_log)
                     self.assertIn("Исходный текст:", error_log)
                     self.assertIn("Исходный текст:", error_log)
-                    self.assertIn("Итоговый ответ:\nbroken = {", error_log)
+                    self.assertIn("Ответ ИИ:\nbroken = {", error_log)
+                    failure = next(
+                        item for item in app.log_items
+                        if item[0] == "ОШИБКА" and item[1] and item[1].name == "b.ftl"
+                    )
+                    self.assertIn("Оригинал:\nb = Hello", failure[2])
+                    self.assertNotIn("Причина:", failure[2])
+                    self.assertIsNotNone(failure[3])
+                    self.assertIsNotNone(failure[4])
                     await pilot.press("q")
                     self.assertEqual(app.phase, "summary")
                 cache = _load_cache(_cache_path(repo, "en-US", "ru-RU"))

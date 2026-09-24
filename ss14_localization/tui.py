@@ -24,7 +24,7 @@ from .constants import (
     DEFAULT_TARGET_CULTURE,
 )
 from .dependencies import import_or_install
-from .filesystem import iter_files, read_text, write_text_if_changed
+from .filesystem import is_pass_path, iter_files, read_text, write_text_if_changed
 from .paths import TOOL_ROOT, find_repo_root
 
 
@@ -395,6 +395,30 @@ def create_app(repo: Path):
             self.translation_settings = None
             self.save_tokens = True
             self.translation_total = 0
+            self._translation_app_stopping = False
+
+        def action_quit(self) -> None:
+            self._translation_app_stopping = True
+            self.exit()
+
+        def on_unmount(self) -> None:
+            self._translation_app_stopping = True
+
+        def _post(self, callback, *args):
+            if self._translation_app_stopping:
+                return None
+
+            def deliver():
+                if not self._translation_app_stopping:
+                    return callback(*args)
+                return None
+
+            try:
+                return self.call_from_thread(deliver)
+            except RuntimeError:
+                if self._translation_app_stopping:
+                    return None
+                raise
 
         def compose(self) -> ComposeResult:
             yield Header(show_clock=False)
@@ -552,16 +576,16 @@ def create_app(repo: Path):
                     config = AiConfig.from_env()
                     models = fetch_models(
                         config,
-                        on_error=lambda endpoint, error: self.call_from_thread(
+                        on_error=lambda endpoint, error: self._post(
                             self._log,
                             "ОШИБКА",
                             None,
                             f"Получение моделей {endpoint.base_url}: {error}",
                         ),
                     )
-                    self.call_from_thread(self._models_loaded, config, models, None)
+                    self._post(self._models_loaded, config, models, None)
                 except Exception as error:  # noqa: BLE001 — ошибка сервера должна появиться в интерфейсе.
-                    self.call_from_thread(self._models_loaded, None, {}, str(error))
+                    self._post(self._models_loaded, None, {}, str(error))
 
             Thread(target=worker, daemon=True).start()
 
@@ -753,11 +777,7 @@ def create_app(repo: Path):
             before: str | None = None,
             after: str | None = None,
         ) -> None:
-            item = [status, path, detail, before, after, False]
-            self.log_items.append(item)
-            log = self.query_one("#log", RichLog)
-            self.log_rows.append(len(log.lines))
-            log.write(self._log_render(len(self.log_items) - 1))
+            write_error = None
             if status in {"ОШИБКА", "ПОВТОР"}:
                 name = (
                     str(path.relative_to(repo))
@@ -767,13 +787,24 @@ def create_app(repo: Path):
                     else ""
                 )
                 try:
+                    when = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                    entry = f"{when} [{status}] {name}\n{detail}\n"
+                    if before is not None or after is not None:
+                        entry += (
+                            f"Исходный текст:\n{before or ''}\n"
+                            f"Итоговый ответ:\n{after or ''}\n"
+                        )
                     with self.error_log_path.open("a", encoding="utf-8") as log:
-                        when = datetime.now(timezone.utc).isoformat(timespec="seconds")
-                        log.write(f"{when} [{status}] {name}\n{detail}\n\n")
+                        log.write(entry + "\n")
                 except OSError as error:
-                    self.query_one("#log", RichLog).write(
-                        f"[ОШИБКА] Не удалось записать {self.error_log_path}: {error}"
-                    )
+                    write_error = error
+            item = [status, path, detail, before, after, False]
+            self.log_items.append(item)
+            log = self.query_one("#log", RichLog)
+            self.log_rows.append(len(log.lines))
+            log.write(self._log_render(len(self.log_items) - 1))
+            if write_error:
+                log.write(f"[ОШИБКА] Не удалось записать {self.error_log_path}: {write_error}")
 
         def _prepare_event(self, kind, path, done, total):
             if kind == "started":
@@ -822,17 +853,19 @@ def create_app(repo: Path):
                         self.review_files.append(path)
                     self._log("ГОТОВО", path, before=before, after=after)
                 else:
-                    response = (
-                        payload["response"]
-                        if payload["response"] is not None
-                        else "Ответ не получен"
-                    )
-                    self._log(
-                        "ОШИБКА",
-                        path,
-                        f"Причина: {payload['error']}\nИсходный текст:\n{payload['source']}\n"
-                        f"Итоговый ответ:\n{response}",
-                    )
+                    for failure in payload.get("failures") or [payload]:
+                        response = failure.get("response") or "Ключ отсутствует в ответе ИИ"
+                        source = failure.get("source") or "Исходный ключ недоступен"
+                        self._log(
+                            "ОШИБКА", path,
+                            f"Ответ ИИ:\n{response}\nОригинал:\n{source}",
+                            payload.get("full_source", source),
+                            (
+                                "Ответ ИИ:\n"
+                                f"{failure.get('full_response') or failure.get('response') or 'Ответ не получен'}\n"
+                                f"Причина: {failure['error']}"
+                            ),
+                        )
             self._tick()
 
         def _usage(self, prompt_tokens, completion_tokens, retry):
@@ -852,6 +885,7 @@ def create_app(repo: Path):
             will_retry,
             source=None,
             response=None,
+            full_response=None,
         ):
             if kind == "split":
                 self._log(
@@ -868,8 +902,14 @@ def create_app(repo: Path):
                 else f"Попытки исчерпаны ({attempt}/{maximum or '∞'}): {error}"
             )
             if source is not None:
-                detail += f"\nИсходный блок:\n{source}\nОтвет ИИ:\n{response}"
-            self._log("ПОВТОР" if will_retry else "ОШИБКА", path, detail)
+                self._log(
+                    "ПОВТОР" if will_retry else "ОШИБКА", path,
+                    f"Ответ ИИ:\n{response or 'Ответ не получен'}\nОригинал:\n{source}",
+                    source,
+                    f"Ответ ИИ:\n{full_response or response or 'Ответ не получен'}\nПричина: {detail}",
+                )
+            else:
+                self._log("ПОВТОР" if will_retry else "ОШИБКА", path, detail)
 
         def _prepared_skipped(self, count: int) -> None:
             self.skipped += count
@@ -938,9 +978,10 @@ def create_app(repo: Path):
                         target_root / path.relative_to(source_root)
                         for path in source_files
                         if path.relative_to(source_root).as_posix() in target_hashes
+                        and not is_pass_path(target_root / path.relative_to(source_root), repo)
                     ]
-                    self.call_from_thread(self._prepare_event, "finished", target_root, 1, 1)
-                    self.call_from_thread(
+                    self._post(self._prepare_event, "finished", target_root, 1, 1)
+                    self._post(
                         self._log,
                         "ПРОПУСК",
                         None,
@@ -951,7 +992,8 @@ def create_app(repo: Path):
                         source_root,
                         target_root,
                         [Path(".")],
-                        on_event=lambda *items: self.call_from_thread(self._prepare_event, *items),
+                        on_event=lambda *items: self._post(self._prepare_event, *items),
+                        repo_root=repo,
                     )
                     files = list(prepared.target_files)
                     inventory, source_digest, _, target_hashes = _inventory(
@@ -980,7 +1022,7 @@ def create_app(repo: Path):
                     "verified": verified,
                 }
                 _save_cache(cache_path, cache)
-                self.call_from_thread(self._new_stage, "Проверка перевода", len(files))
+                self._post(self._new_stage, "Проверка перевода", len(files))
                 candidates, plans, weights = [], {}, {}
                 checked = {}
                 skipped = 0
@@ -1012,9 +1054,9 @@ def create_app(repo: Path):
                             )  # Ошибка чтения или разбора будет показана при переводе.
                             weights[path] = max(1, budget.tokens(text))
                     if number % 25 == 0 or number == len(files):
-                        self.call_from_thread(self._plan_progress, number)
-                self.call_from_thread(self._prepared_skipped, skipped)
-                self.call_from_thread(
+                        self._post(self._plan_progress, number)
+                self._post(self._prepared_skipped, skipped)
+                self._post(
                     self._new_stage,
                     "Перевод",
                     len(candidates),
@@ -1033,7 +1075,7 @@ def create_app(repo: Path):
                 def on_translation_event(kind, path, payload):
                     if kind in {"completed", "skipped"} and path.is_file():
                         checked[path.relative_to(target_root).as_posix()] = _file_hash(path)
-                    self.call_from_thread(
+                    self._post(
                         self._translation_event,
                         kind,
                         path,
@@ -1054,8 +1096,8 @@ def create_app(repo: Path):
                     save_tokens=save_tokens,
                     plans=plans,
                     on_event=on_translation_event,
-                    on_retry=lambda *items: self.call_from_thread(self._retry_event, *items),
-                    on_usage=lambda *items: self.call_from_thread(self._usage, *items),
+                    on_retry=lambda *items: self._post(self._retry_event, *items),
+                    on_usage=lambda *items: self._post(self._usage, *items),
                 )
                 try:
                     if candidates:
@@ -1086,9 +1128,9 @@ def create_app(repo: Path):
                     _save_cache(cache_path, cache)
                 except OSError:
                     pass  # Не превращаем завершённый перевод в ошибку из-за кэша.
-                self.call_from_thread(self._finish, result)
+                self._post(self._finish, result)
             except Exception as error:  # noqa: BLE001 — ошибка фоновой подготовки показывается пользователю.
-                self.call_from_thread(self._fatal, str(error))
+                self._post(self._fatal, str(error))
 
         def _finish(self, result):
             self.failures = list(result.failed_details)
@@ -1182,7 +1224,7 @@ def create_app(repo: Path):
                     prompt += "\n\nПожелание пользователя к этому файлу: " + suggestion.strip()
 
                 def on_event(kind, file, payload):
-                    self.call_from_thread(
+                    self._post(
                         self._translation_event,
                         kind,
                         file,
@@ -1201,8 +1243,8 @@ def create_app(repo: Path):
                     save_tokens=self.save_tokens,
                     plans={path: (old, messages, ())},
                     on_event=on_event,
-                    on_retry=lambda *items: self.call_from_thread(self._retry_event, *items),
-                    on_usage=lambda *items: self.call_from_thread(self._usage, *items),
+                    on_retry=lambda *items: self._post(self._retry_event, *items),
+                    on_usage=lambda *items: self._post(self._usage, *items),
                 )
                 if not result.failed_files:
                     cache_path = _cache_path(repo, self.source, self.target)
@@ -1212,10 +1254,10 @@ def create_app(repo: Path):
                     inventory, source_digest, _, _ = _inventory(source_root, target_root)
                     cache["prepared"] = inventory if cache.get("source") == source_digest else None
                     _save_cache(cache_path, cache)
-                self.call_from_thread(self._retranslation_finished, path, result)
+                self._post(self._retranslation_finished, path, result)
             except Exception as error:  # noqa: BLE001 — ошибка повтора не должна закрывать экран проверки.
-                self.call_from_thread(self._log, "ОШИБКА", path, str(error))
-                self.call_from_thread(self._show_review)
+                self._post(self._log, "ОШИБКА", path, str(error))
+                self._post(self._show_review)
 
         def _retranslation_finished(self, path, result):
             self.failures = [item for item in self.failures if item.path != path]

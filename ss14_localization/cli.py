@@ -15,6 +15,7 @@ from .constants import (
     DEFAULT_TARGET_CULTURE,
 )
 from .filesystem import (
+    is_pass_path,
     iter_files,
     read_text,
     remove_empty_files_and_dirs,
@@ -196,6 +197,8 @@ def _normalize(args: argparse.Namespace) -> int:
     changed = 0
 
     for path in iter_files(root, ".ftl"):
+        if is_pass_path(path, args.repo_root):
+            continue
         normalized = normalize_fluent_text(read_text(path))
         if normalized:
             changed += 1 if write_text_if_changed(path, normalized, dry_run=args.dry_run) else 0
@@ -204,7 +207,9 @@ def _normalize(args: argparse.Namespace) -> int:
             if not args.dry_run:
                 path.unlink()
 
-    removed_files, removed_dirs = remove_empty_files_and_dirs(root, dry_run=args.dry_run)
+    removed_files, removed_dirs = remove_empty_files_and_dirs(
+        root, dry_run=args.dry_run, repo_root=args.repo_root
+    )
     print(f"normalized={changed} removed_files={removed_files} removed_dirs={removed_dirs}")
     return 0
 
@@ -212,6 +217,11 @@ def _normalize(args: argparse.Namespace) -> int:
 def _extract_prototypes(args: argparse.Namespace) -> int:
     output = args.locale_root / args.culture / args.output
     state = args.locale_root / args.culture / args.state_output
+    if is_pass_path(args.repo_root / output, args.repo_root) or is_pass_path(
+        args.repo_root / state, args.repo_root
+    ):
+        print("Пути вывода исключены из обработки.")
+        return 0
     count, changed = write_entity_ftl(
         args.repo_root,
         args.prototypes_root,
@@ -229,6 +239,7 @@ def _sync_strings(args: argparse.Namespace) -> int:
         locale_root / args.source_culture,
         locale_root / args.target_culture,
         dry_run=args.dry_run,
+        repo_root=args.repo_root,
     )
 
     if args.bidirectional:
@@ -236,6 +247,7 @@ def _sync_strings(args: argparse.Namespace) -> int:
             locale_root / args.target_culture,
             locale_root / args.source_culture,
             dry_run=args.dry_run,
+            repo_root=args.repo_root,
         )
         result = result + reverse
 
@@ -252,6 +264,7 @@ def _prepare_target_file(args: argparse.Namespace) -> int:
         args.repo_root / args.target_file,
         args.repo_root / args.target_locale_root,
         dry_run=args.dry_run,
+        repo_root=args.repo_root,
     )
     print(f"added_messages={added} changed={changed}")
     return 0
@@ -263,6 +276,7 @@ def _prepare_target_files(args: argparse.Namespace) -> int:
         args.repo_root / args.target_culture_root,
         args.relative_root,
         dry_run=args.dry_run,
+        repo_root=args.repo_root,
     )
     report = {
         "target_files": [str(path) for path in result.target_files],
@@ -287,13 +301,13 @@ def _validate(args: argparse.Namespace) -> int:
 
     source_root, target_root = _locale_roots(args)
     pass_path = (
-        resolve_tool_file(args.pass_list, Path("pass_list.yml")) if args.pass_list else None
+        resolve_tool_file(args.pass_list, Path("")) if args.pass_list else None
     )
     profile = resolve_tool_file(args.language_profile, Path("")) if args.language_profile else None
     checker = LanguageChecker(
         args.source_culture,
         args.target_culture,
-        load_pass_list(args.repo_root, pass_path),
+        load_pass_list(args.repo_root, pass_path, args.target_culture),
         args.language_ratio,
         profile,
     )
@@ -301,6 +315,7 @@ def _validate(args: argparse.Namespace) -> int:
         source_root,
         target_root,
         checker=checker,
+        repo_root=args.repo_root,
     )
 
     print(
@@ -330,9 +345,9 @@ def _translation_settings(args):
             "число параллельных запросов — положительным"
         )
     pass_path = (
-        resolve_tool_file(args.pass_list, Path("pass_list.yml")) if args.pass_list else None
+        resolve_tool_file(args.pass_list, Path("")) if args.pass_list else None
     )
-    pass_list = load_pass_list(args.repo_root, pass_path)
+    pass_list = load_pass_list(args.repo_root, pass_path, args.target_culture)
     profile = resolve_tool_file(args.language_profile, Path("")) if args.language_profile else None
     checker = LanguageChecker(
         args.source_culture,
@@ -346,7 +361,15 @@ def _translation_settings(args):
     if not (TOOL_ROOT / default_prompt).is_file():
         default_prompt = Path("prompts/default.md")
     prompt_path = resolve_tool_file(args.prompt, default_prompt)
-    glossary_path = resolve_tool_file(args.glossary, Path("glossary.md"))
+    glossary_path = resolve_tool_file(args.glossary, Path(f"{args.target_culture}-GLOSSARY.md"))
+    if args.glossary:
+        import re
+
+        match = re.fullmatch(r"([A-Za-z]{2,3}-[A-Za-z]{2})-GLOSSARY\.md", glossary_path.name)
+        if match and match.group(1).casefold() != args.target_culture.casefold():
+            raise ValueError(f"Словарь {glossary_path.name} не подходит для {args.target_culture}")
+    if not glossary_path.is_file() and args.glossary is None:
+        glossary_path = None
     prompt = build_translation_prompt(
         prompt_path, glossary_path, args.source_culture, args.target_culture, pass_list
     )
@@ -416,6 +439,7 @@ def _translate(args):
     for path in files:
         if target_root not in path.parents:
             raise ValueError(f"Файл вне целевой локали: {path}. Укажите правильный --target-root.")
+    files = [path for path in files if not is_pass_path(path, args.repo_root)]
     result = _run_translation(args, files, settings)
     _report(args, result)
     return 1 if result.failed_files else 0
@@ -426,7 +450,9 @@ def _translate_all(args):
 
     settings = _translation_settings(args)
     source_root, target_root = _locale_roots(args)
-    prepared = prepare_target_files(source_root, target_root, [Path(".")], args.dry_run)
+    prepared = prepare_target_files(
+        source_root, target_root, [Path(".")], args.dry_run, repo_root=args.repo_root
+    )
     print(
         f"target_files={len(prepared.target_files)} prepared_files={prepared.prepared_files} "
         f"added_messages={prepared.added_messages} moved_messages={prepared.moved_messages}"

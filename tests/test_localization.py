@@ -357,10 +357,50 @@ class LanguageTests(unittest.TestCase):
     def test_pass_word_not_whole_line(self):
         self.assertEqual(self.ru.ratio("Desert Eagle"), 1)
         self.assertEqual(self.ru.ratio("M1 Garand"), 1)
-        self.assertEqual(self.ru.ratio("AI APC DNA GPS PDA UI NT IDs"), 1)
+        self.assertEqual(self.ru.ratio("APC DNA GPS PDA UI NT IDs"), 1)
+        self.assertLess(self.ru.ratio("AI is ready"), 0.8)
         self.assertLess(self.ru.ratio("Desert Eagle Hello world"), 0.8)
         self.assertEqual(self.ru.ratio("Desert Eagle — мощное оружие"), 1)
         self.assertLess(self.ru.ratio("[Hello World]"), 0.8)
+
+    def test_language_specific_pass_list_and_extra_term(self):
+        self.assertIn("Desert Eagle", load_pass_list(target_culture="ru-RU").terms)
+        self.assertEqual(load_pass_list(target_culture="fr-FR").terms, ())
+        with self.assertRaisesRegex(ValueError, "не подходит"):
+            load_pass_list(path=Path("ru-RU-PASS_LIST.yml"), target_culture="fr-FR")
+        PassList(("Desert Eagle",)).assert_preserved(
+            "Найди оружие", "Найди Desert Eagle"
+        )
+
+    def test_upstream_pass_paths_keep_project_files(self):
+        from ss14_localization.filesystem import is_pass_path
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            locale = root / "Resources" / "Locale" / "en-US"
+            self.assertTrue(is_pass_path(locale / "station" / "name.ftl", root))
+            self.assertTrue(is_pass_path(locale / "_strings" / "name.ftl", root))
+            self.assertFalse(is_pass_path(locale / "_sunrise" / "name.ftl", root))
+            self.assertFalse(is_pass_path(locale / "_starlight" / "name.ftl", root))
+            with patch.dict(os.environ, {"TRANSLATE_PASS_PATHS": "Resources/Locale/fr-FR/private"}):
+                self.assertTrue(is_pass_path(locale.parent / "fr-FR" / "private" / "name.ftl", root))
+
+    def test_preparation_does_not_rewrite_upstream(self):
+        from ss14_localization.strings import prepare_target_files
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            locale = root / "Resources" / "Locale"
+            source, target = locale / "fr-FR", locale / "en-US"
+            for folder in ("station", "_strings", "_sunrise"):
+                (source / folder).mkdir(parents=True)
+                (target / folder).mkdir(parents=True)
+                (source / folder / "name.ftl").write_text(f"{folder.lstrip('_')} = Source\n", encoding="utf-8")
+                (target / folder / "name.ftl").write_text(f"{folder.lstrip('_')} = Target\n", encoding="utf-8")
+            result = prepare_target_files(source, target, [Path(".")], repo_root=root)
+            self.assertEqual((target / "station" / "name.ftl").read_text(), "station = Target\n")
+            self.assertEqual((target / "_strings" / "name.ftl").read_text(), "strings = Target\n")
+            self.assertEqual(result.target_files, (target / "_sunrise" / "name.ftl",))
 
     def test_language_share_is_combined_across_fields(self):
         text = (
@@ -1003,6 +1043,29 @@ class TranslationTests(Fixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.changed_files, 1)
         self.assertEqual(result.failed_files, (path,))
         self.assertEqual(path.read_text(encoding="utf-8"), "a = Привет\nb = World\n")
+
+    async def test_every_failed_key_is_reported_for_one_file(self):
+        class BrokenClient:
+            _on_retry = None
+
+            async def chat(self, messages):
+                payload = messages[-2]["content"] if len(messages) > 2 else messages[-1]["content"]
+                return "\n".join(f"{key} = {{" for key in message_map(payload))
+
+        path = self.target / "two-broken.ftl"
+        self.write(path, "a = Hello\nb = World\n")
+        events = []
+        with (
+            patch("ss14_localization.translate.OpenAICompatibleClient", return_value=BrokenClient()),
+            patch.dict(os.environ, {"TRANSLATE_AI_RESPONSE_MAX_ATTEMPTS": "1"}),
+        ):
+            await translate_files(
+                [path], "Prompt", 0, checker=self.checker,
+                on_event=lambda kind, _path, payload: events.append((kind, payload)),
+            )
+        failures = next(payload["failures"] for kind, payload in events if kind == "failed")
+        self.assertEqual([item["source"] for item in failures], ["a = Hello", "b = World"])
+        self.assertTrue(all(item["full_response"] for item in failures))
 
     async def test_invalid_multi_message_response_splits_without_full_retry(self):
         paths = [self.target / "one.ftl", self.target / "two.ftl"]

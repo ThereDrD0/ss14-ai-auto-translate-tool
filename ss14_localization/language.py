@@ -74,8 +74,7 @@ class PassList:
         if missing:
             raise ValueError(
                 f"ИИ изменил слово или название из pass-листа: "
-                f"исчезли {list(missing.elements())}, "
-                f"появились {list((translated - original).elements())}"
+                f"исчезли {list(missing.elements())}"
             )
 
 
@@ -100,10 +99,14 @@ def _pass_pattern(terms, plural=False):
     )
 
 
-def load_pass_list(repo_root: Path | None = None, path: Path | None = None) -> PassList:
-    candidates = [path] if path else [TOOL_ROOT / "pass_list.yml"]
-    if repo_root is not None and path is None:
-        candidates.append(repo_root / "Tools" / "_sunrise" / "Schemas" / "ignore_list.yml")
+def load_pass_list(
+    repo_root: Path | None = None, path: Path | None = None, target_culture: str = "ru-RU"
+) -> PassList:
+    if path is not None:
+        match = re.fullmatch(r"([A-Za-z]{2,3}-[A-Za-z]{2})-PASS_LIST\.yml", path.name)
+        if match and match.group(1).casefold() != target_culture.casefold():
+            raise ValueError(f"Pass-лист {path.name} не подходит для {target_culture}")
+    candidates = [path] if path else [TOOL_ROOT / f"{target_culture}-PASS_LIST.yml"]
     terms = set()
     ignored_files = set()
     for candidate in candidates:

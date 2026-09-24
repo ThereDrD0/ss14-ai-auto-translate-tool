@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .filesystem import iter_files, read_text
+from .filesystem import is_pass_path, iter_files, read_text
 from .fluent import (
     FluentSyntaxError,
     assert_structure,
@@ -37,13 +37,18 @@ class ValidationReport:
         self.findings.append(ValidationFinding(level, path, message_id, text))
 
 
-def validate_locale(source_root: Path, target_root: Path, checker=None) -> ValidationReport:
+def validate_locale(
+    source_root: Path, target_root: Path, checker=None, repo_root=None
+) -> ValidationReport:
     report = ValidationReport()
+    repo_root = repo_root or target_root.parents[2]
     if not source_root.is_dir():
         raise FileNotFoundError(source_root)
     target_owners = {}
     target_resources = {}
     for path in iter_files(target_root, ".ftl"):
+        if is_pass_path(path, repo_root):
+            continue
         try:
             resource = parse_resource(read_text(path))
             target_resources[path] = resource
@@ -62,6 +67,8 @@ def validate_locale(source_root: Path, target_root: Path, checker=None) -> Valid
     for source_path in iter_files(source_root, ".ftl"):
         relative = source_path.relative_to(source_root)
         target_path = target_root / relative
+        if is_pass_path(target_path, repo_root):
+            continue
         try:
             source_messages = entries(parse_resource(read_text(source_path)))
         except ValueError as error:

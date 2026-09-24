@@ -4,6 +4,27 @@ import os
 import tempfile
 from pathlib import Path
 
+from .constants import DEFAULT_LOCALE_ROOT
+
+
+def is_pass_path(path: Path, repo_root: Path) -> bool:
+    """Protect upstream en-US, except project directories under it."""
+    path = path.resolve()
+    upstream = (repo_root / DEFAULT_LOCALE_ROOT / "en-US").resolve()
+    if path == upstream or upstream in path.parents:
+        relative = path.relative_to(upstream)
+        if not relative.parts or not (
+            relative.parts[0].startswith("_") and relative.parts[0] != "_strings"
+        ):
+            return True
+    extra = os.environ.get("TRANSLATE_PASS_PATHS", "")
+    for item in extra.split(";"):
+        if item.strip():
+            skipped = (repo_root / item.strip()).resolve()
+            if path == skipped or skipped in path.parents:
+                return True
+    return False
+
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
@@ -46,14 +67,23 @@ def iter_files(root: Path, suffix: str) -> list[Path]:
     return sorted(path for path in root.rglob(f"*{suffix}") if path.is_file())
 
 
-def remove_empty_files_and_dirs(root: Path, dry_run: bool = False) -> tuple[int, int]:
+def remove_empty_files_and_dirs(
+    root: Path, dry_run: bool = False, repo_root: Path | None = None
+) -> tuple[int, int]:
     removed_files = 0
     removed_dirs = 0
 
     if not root.exists():
         return removed_files, removed_dirs
 
-    paths = sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True)
+    paths = sorted(
+        (
+            path for path in root.rglob("*")
+            if repo_root is None or not is_pass_path(path, repo_root)
+        ),
+        key=lambda item: len(item.parts),
+        reverse=True,
+    )
 
     zero_size_files = {path for path in paths if path.is_file() and path.stat().st_size == 0}
 

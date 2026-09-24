@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .filesystem import iter_files, read_text, write_text_if_changed
+from .filesystem import is_pass_path, iter_files, read_text, write_text_if_changed
 from .fluent import (
     FluentSyntaxError,
     entries,
@@ -87,7 +87,13 @@ def _read_resource(path, texts=None):
         raise FluentSyntaxError(f"{path}: {error}") from error
 
 
-def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event=None):
+def _prepare(
+    pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event=None, repo_root=None
+):
+    repo_root = repo_root or target_root.parents[2]
+    pairs = {
+        source: target for source, target in pairs.items() if not is_pass_path(target, repo_root)
+    }
     ast = syntax().ast
     sources = {}
     source_texts = {}
@@ -111,7 +117,9 @@ def _prepare(pairs: dict[Path, Path], target_root: Path, dry_run: bool, on_event
             owners[key] = target_path
             source_origins[key] = source_path
 
-    target_paths = set(iter_files(target_root, ".ftl")) | set(pairs.values())
+    target_paths = {
+        path for path in iter_files(target_root, ".ftl") if not is_pass_path(path, repo_root)
+    } | set(pairs.values())
     target_texts = {}
     targets = {
         path: _read_resource(path, target_texts) for path in sorted(target_paths) if path.exists()
@@ -226,6 +234,7 @@ def prepare_target_files(
     relative_roots: list[Path],
     dry_run: bool = False,
     on_event=None,
+    repo_root=None,
 ):
     source_culture_root = source_culture_root.resolve()
     target_culture_root = target_culture_root.resolve()
@@ -248,11 +257,15 @@ def prepare_target_files(
         for path in paths:
             if path.suffix == ".ftl":
                 pairs[path] = target_culture_root / path.relative_to(source_culture_root)
-    return _prepare(pairs, target_culture_root, dry_run, on_event)
+    return _prepare(pairs, target_culture_root, dry_run, on_event, repo_root)
 
 
-def sync_locale_strings(source_root: Path, target_root: Path, dry_run: bool = False):
-    result = prepare_target_files(source_root, target_root, [Path(".")], dry_run)
+def sync_locale_strings(
+    source_root: Path, target_root: Path, dry_run: bool = False, repo_root=None
+):
+    result = prepare_target_files(
+        source_root, target_root, [Path(".")], dry_run, repo_root=repo_root
+    )
     return SyncResult(len(result.target_files), result.prepared_files, result.added_messages)
 
 
@@ -261,6 +274,7 @@ def write_missing_messages_for_file(
     target_path: Path,
     target_locale_root: Path,
     dry_run: bool = False,
+    repo_root=None,
 ):
     if target_locale_root.resolve() not in target_path.resolve().parents:
         raise ValueError("Целевой файл должен находиться в указанной целевой локали")
@@ -272,5 +286,6 @@ def write_missing_messages_for_file(
         {source_path.resolve(): target_path.resolve()},
         target_locale_root.resolve(),
         dry_run,
+        repo_root=repo_root,
     )
     return result.added_messages, bool(result.prepared_files)

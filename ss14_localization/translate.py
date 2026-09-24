@@ -4,7 +4,7 @@ import asyncio
 import os
 import re
 import sys
-from collections import deque
+from collections import defaultdict, deque
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,9 +48,10 @@ class TranslationRunResult:
 
 
 class TranslationValidationError(ValueError):
-    def __init__(self, message, ai_response=None):
+    def __init__(self, message, ai_response=None, full_response=None):
         super().__init__(message)
         self.ai_response = ai_response
+        self.full_response = full_response if full_response is not None else ai_response
 
 
 class TranslationFileError(RuntimeError):
@@ -88,7 +89,9 @@ def build_translation_prompt(
         f"\n\nИсходный язык: {source_culture}. Целевой язык: {target_culture}. "
         "Верните только обычный текст FTL, без JSON, пояснений и ограждений Markdown. "
         "Сохраните ключи, атрибуты, комментарии, ссылки, переменные, функции, варианты выбора, "
-        "параметры разметки и названия из pass-листа. Не переписывайте уже переведённые части."
+        "параметры разметки и названия из pass-листа, если они есть в исходнике. "
+        "Слова из pass-листа можно естественно добавлять в перевод. "
+        "Не переписывайте уже переведённые части."
     )
     return prompt
 
@@ -97,7 +100,7 @@ def _split_messages(text, target_culture, checker=None):
     checker = checker or LanguageChecker(
         "ru-RU" if target_culture.startswith("en") else "en-US",
         target_culture,
-        load_pass_list(),
+        load_pass_list(target_culture=target_culture),
     )
     resource = parse_resource(text)
     nodes = entries(resource)
@@ -250,11 +253,13 @@ def _parse_partial_response(response, expected, target_culture=None, checker=Non
     valid, invalid = {}, {}
     for key, source in expected.items():
         if key in duplicates:
-            invalid[key] = TranslationValidationError(f"{key}: повторяющийся ключ в ответе")
+            invalid[key] = TranslationValidationError(
+                f"{key}: повторяющийся ключ в ответе", segments[key], text
+            )
             continue
         if key not in segments:
             invalid[key] = TranslationValidationError(
-                f"{key}: ключ отсутствует в ответе", text[:2000] if len(expected) == 1 else None
+                f"{key}: ключ отсутствует в ответе", full_response=text
             )
             continue
         segment = segments[key]
@@ -266,7 +271,7 @@ def _parse_partial_response(response, expected, target_culture=None, checker=Non
             _validate_translated_message(source.text, candidate, checker)
             valid[key] = candidate
         except (KeyError, ValueError) as error:
-            invalid[key] = TranslationValidationError(f"{key}: {error}", segment)
+            invalid[key] = TranslationValidationError(f"{key}: {error}", segment, text)
     return valid, invalid
 
 
@@ -297,7 +302,8 @@ async def _translate_chunk(
     if protected:
         prompt += (
             "\n\nВ этом блоке сохраните в значениях указанных ключей следующие написания "
-            "дословно, с исходным регистром и числом повторений:\n" + "\n".join(protected)
+            "дословно, с исходным регистром; при необходимости их можно употреблять "
+            "и дополнительно:\n" + "\n".join(protected)
         )
     if not budget.fits(payload, prompt):
         raise ResponseTruncatedError("Блок не помещается в заданный бюджет ответа/контекста")
@@ -641,7 +647,9 @@ async def translate_file(
     if checker is None:
         if target_culture is None:
             raise ValueError("Укажите целевой язык перевода")
-        checker = LanguageChecker("en-US", target_culture, load_pass_list())
+        checker = LanguageChecker(
+            "en-US", target_culture, load_pass_list(target_culture=target_culture)
+        )
     budget = budget or OutputBudget.from_env()
     if messages is None or context is None:
         found, examples = _split_messages(text, target_culture, checker)
@@ -695,7 +703,9 @@ async def translate_files(
     if checker is None:
         if target_culture is None:
             raise ValueError("Укажите целевой язык перевода")
-        checker = LanguageChecker("en-US", target_culture, load_pass_list())
+        checker = LanguageChecker(
+            "en-US", target_culture, load_pass_list(target_culture=target_culture)
+        )
     budget = budget or OutputBudget.from_env()
     pending, failures = [], []
     texts = texts or {}
@@ -725,17 +735,21 @@ async def translate_files(
                 on_event(
                     "failed",
                     path,
-                    {"error": str(error), "source": text, "response": None},
+                    {
+                        "error": str(error), "source": "", "response": None, "full_source": text
+                    },
                 )
     if not pending:
         return TranslationRunResult(0, 0, tuple(item.path for item in failures), tuple(failures))
 
     owners = {}
+    original_messages = {}
     packed = []
     contexts = {}
     for path, _, messages, context in pending:
         contexts[path] = context
         for message in messages:
+            original_messages[(path, message.id)] = message.text
             item = _pack_message(message, len(packed))
             owners[item.id] = (path, message.id)
             packed.append(item)
@@ -775,6 +789,7 @@ async def translate_files(
     accepted_count = {path: 0 for path in remaining}
     changed_paths = set()
     errors = {}
+    failed_keys = defaultdict(list)
     file_failures = {}
     translated = 0
 
@@ -840,6 +855,7 @@ async def translate_files(
                 else:
                     retry_caps.pop(item.id, None)
                     errors.setdefault(path, error)
+                    failed_keys[path].append((key, error))
                     remaining[path] -= 1
 
             # ponytail: записываем принятые ключи сразу; файл может ждать другие ключи.
@@ -853,6 +869,7 @@ async def translate_files(
                     translated += len(replacements)
                 except Exception as error:  # noqa: BLE001 — ошибка записи касается одного файла.
                     errors[path] = error
+                    failed_keys[path].append((None, error))
 
             if retry:
                 if not valid and len(chunk) > 1:
@@ -865,18 +882,17 @@ async def translate_files(
                     queue.appendleft(item)
                 retry_callback = getattr(client, "_on_retry", None)
                 if retry_callback:
-                    _current_file.set(owners[retry[0].id][0])
-                    reason = ValueError(
-                        f"Повторяются {len(retry)} ключей; {retry_reasons[retry[0].id]}"
-                    )
-                    retry_callback(
-                        "validation",
-                        max(attempts[item.id] for item in retry),
-                        response_attempts,
-                        reason,
-                        response_cooldown,
-                        True,
-                    )
+                    for item in retry:
+                        path, key = owners[item.id]
+                        error = invalid[item.id]
+                        _current_file.set(path)
+                        retry_callback(
+                            "validation", attempts[item.id], response_attempts,
+                            error, response_cooldown, True,
+                            original_messages[(path, key)],
+                            getattr(error, "ai_response", None),
+                            getattr(error, "full_response", None),
+                        )
 
             for path in {owners[item.id][0] for item in chunk}:
                 if remaining[path] or path in finished:
@@ -888,13 +904,22 @@ async def translate_files(
                         path, accepted_count[path], path in changed_paths, str(error)
                     )
                     if on_event:
+                        details = [
+                            {
+                                "error": str(failure),
+                                "source": original_messages.get((path, key), ""),
+                                "response": getattr(failure, "ai_response", None),
+                                "full_response": getattr(failure, "full_response", None),
+                            }
+                            for key, failure in failed_keys[path]
+                        ]
                         on_event(
                             "failed",
                             path,
                             {
                                 "error": str(error),
-                                "source": file_texts[path],
-                                "response": getattr(error, "ai_response", None),
+                                "failures": details,
+                                "full_source": file_texts[path],
                             },
                         )
                 elif on_event:
