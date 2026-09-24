@@ -38,7 +38,11 @@
 
 Проверка перевода и просмотр изменений
 
-<img width="1898" height="887" alt="image" src="https://github.com/user-attachments/assets/92f6a2fa-64eb-421a-aef4-42225bc7ae63" />
+<img width="1920" height="1079" alt="image" src="https://github.com/user-attachments/assets/5de181d7-ec7f-401a-b9a1-da9f813aa13c" />
+
+Статистика
+
+<img width="1920" height="1079" alt="image" src="https://github.com/user-attachments/assets/27cad2ba-ad7e-4996-82dc-ceed13e00bcb" />
 
 ## Quick start
 
