@@ -11,7 +11,7 @@ from threading import Event, Thread
 from unittest.mock import patch
 
 from textual.color import Color
-from textual.widgets import Checkbox, Input, OptionList, RichLog, Static
+from textual.widgets import Button, Checkbox, Input, OptionList, RichLog, Static
 
 from ss14_localization.tui import (
     TokenEta,
@@ -262,14 +262,41 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             app.review_files = [target / "a.ftl", target / "b.ftl"]
             app.review_before = {path: f"{path.stem} = Hello\n" for path in app.review_files}
             async with app.run_test(size=(80, 25)) as pilot:
+                app.query_one("#choose").display = False
                 app._show_review()
                 await pilot.pause()
+                files = app.query_one("#review-files", OptionList)
+                self.assertTrue(str(files.get_option_at_index(0).prompt).strip().startswith("1."))
+                self.assertTrue(str(files.get_option_at_index(1).prompt).strip().startswith("2."))
+                self.assertEqual(
+                    app.query_one("#review-log", Button).region.y,
+                    app.query_one("#review-done", Button).region.y,
+                )
+                self.assertIn("←", str(app.query_one("#review-log", Button).label))
+                self.assertIn("→", str(app.query_one("#review-done", Button).label))
                 view = app.query_one("#review-diff", RichLog)
                 self.assertTrue(view.wrap)
                 self.assertGreater(len(view.lines), 4)
                 self.assertIn("a.ftl", "\n".join(line.text for line in view.lines))
-                await pilot.press("down")
+                await pilot.click("#review-files", offset=(2, 2))
+                await pilot.pause()
+                self.assertEqual(files.highlighted, 1)
+                self.assertEqual(type(app.screen).__name__, "Screen")
                 self.assertIn("b.ftl", "\n".join(line.text for line in view.lines))
+                await pilot.press("enter")
+                self.assertEqual(type(app.screen).__name__, "RetranslatePrompt")
+                send = app.screen.query_one("#prompt-send", Button)
+                self.assertIn("Отправить", str(send.label))
+                self.assertGreaterEqual(send.region.height, 3)
+                box = app.screen.query_one("#prompt-box")
+                self.assertLessEqual(send.region.bottom, box.region.bottom)
+                help_text = app.screen.query_one("#prompt-help", Static)
+                self.assertLessEqual(help_text.region.bottom, box.region.bottom)
+                self.assertIn(
+                    "Enter / Space — отправить",
+                    str(help_text.render()),
+                )
+                await pilot.press("escape")
                 await pilot.press("tab")
                 assert app.focused is not None
                 self.assertEqual(app.focused.id, "review-diff")
@@ -283,6 +310,28 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.phase, "review")
                 await pilot.click("#review-done")
                 self.assertEqual(app.phase, "summary")
+
+    async def test_review_opens_at_first_changed_line(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            source = repo / "Resources" / "Locale" / "en-US"
+            target = source.parent / "ru-RU"
+            source.mkdir(parents=True)
+            target.mkdir()
+            (source / "many.ftl").write_text("a = Hello\n", encoding="utf-8")
+            path = target / "many.ftl"
+            original = "\n".join(f"key-{i} = value-{i}" for i in range(80)) + "\n"
+            changed = original.replace("key-35 = value-35", "key-35 = changed")
+            path.write_text(changed, encoding="utf-8")
+            app = create_app(repo)
+            app.review_files = [path]
+            app.review_before = {path: original}
+            async with app.run_test(size=(80, 20)) as pilot:
+                app.query_one("#choose").display = False
+                app._show_review()
+                await pilot.pause()
+                view = app.query_one("#review-diff", RichLog)
+                self.assertGreaterEqual(view.scroll_y, 35)
 
     async def test_model_screen_token_setting_defaults_on(self):
         with tempfile.TemporaryDirectory() as temporary:

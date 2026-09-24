@@ -287,23 +287,50 @@ def create_app(repo: Path):
         def on_mouse_down(self, event):
             cast(TranslationApp, self.app)._toggle_log_at(int(self.scroll_y + event.y - 1))
 
+    class ReviewFiles(OptionList):
+        async def _on_click(self, event):
+            index = event.style.meta.get("option")
+            if index is not None:
+                self._mouse_selecting = True
+                self.highlighted = index
+                cast(TranslationApp, self.app)._refresh_review()
+                self.call_after_refresh(lambda: setattr(self, "_mouse_selecting", False))
+
+        def action_select(self):
+            if not getattr(self, "_mouse_selecting", False):
+                super().action_select()
+
     class RetranslatePrompt(ModalScreen):
         CSS = """
         RetranslatePrompt { align: center middle; background: #000000 65%; }
         #prompt-box {
-            width: 70%; height: 10; padding: 1 2;
+            width: 70%; height: 14; padding: 1 2;
             border: round #83b4c7; background: #18232e;
         }
-        #prompt-input { width: 100%; }
-        #prompt-send { margin-top: 1; }
+        #prompt-input {
+            width: 100%; color: #d4dde7; background: #111821;
+            border: round #506474;
+        }
+        #prompt-input:focus { border: round #83b4c7; }
+        #prompt-send {
+            height: 3; min-width: 34; margin-top: 1;
+            color: #d4dde7; background: #243746; border: round #506474;
+        }
+        #prompt-send:hover, #prompt-send:focus {
+            color: #ffffff; background: #355467; border: round #83b4c7;
+        }
+        #prompt-help { color: #a9b9c6; }
         """
 
         def compose(self):
             with Vertical(id="prompt-box"):
                 yield Static("Пожелание для повторного перевода (необязательно)")
                 yield Input(placeholder="Что улучшить в переводе?", id="prompt-input")
-                yield Button("Отправить · Enter / Space", id="prompt-send")
-                yield Static("Tab — поле ввода   Esc — отмена")
+                yield Button("→ Отправить", id="prompt-send")
+                yield Static(
+                    "Enter / Space — отправить · Tab — поле ввода · Esc — отмена",
+                    id="prompt-help",
+                )
 
         def on_mount(self):
             self.query_one("#prompt-send", Button).focus()
@@ -362,9 +389,10 @@ def create_app(repo: Path):
         #review-files { width: 32%; }
         #review-diff { width: 68%; height: 1fr; border: round #506474; background: #18232e; }
         #review-columns { height: 1fr; }
+        #review-actions { height: 4; padding: 1 0 0 0; }
         #review Button {
             height: 3;
-            margin: 1 0 0 0;
+            margin: 0 1 0 0;
             color: #d4dde7;
             background: #243746;
             border: round #506474;
@@ -461,10 +489,11 @@ def create_app(repo: Path):
             with Vertical(id="review"):
                 yield Static("Проверка переведённых файлов", classes="title")
                 with Horizontal(id="review-columns"):
-                    yield OptionList(id="review-files")
+                    yield ReviewFiles(id="review-files")
                     yield RichLog(wrap=True, auto_scroll=False, id="review-diff")
-                yield Button("Журнал перевода · F4", id="review-log")
-                yield Button("К итогам · Ctrl+Enter", id="review-done")
+                with Horizontal(id="review-actions"):
+                    yield Button("← Журнал перевода · F4", id="review-log")
+                    yield Button("К итогам · Ctrl+Enter →", id="review-done")
             with Vertical(id="summary"):
                 yield Static("Итоги перевода", classes="title")
                 with VerticalScroll(id="summary-scroll"):
@@ -1165,7 +1194,10 @@ def create_app(repo: Path):
             selected = files.highlighted or 0
             root = repo / DEFAULT_LOCALE_ROOT / self.target
             files.set_options(
-                [f"{path.name}  {path.parent.relative_to(root)}" for path in self.review_files]
+                [
+                    f"{number:>3}. {path.name}  {path.parent.relative_to(root)}"
+                    for number, path in enumerate(self.review_files, 1)
+                ]
             )
             if self.review_files:
                 files.highlighted = min(selected, len(self.review_files) - 1)
@@ -1191,9 +1223,12 @@ def create_app(repo: Path):
                 view.write(f"Ошибка чтения {path}: {error}")
                 return
             view.write(f"{path.relative_to(repo)}  ·  номер строки")
+            first_change = None
             for line in _diff_lines(before, after):
+                if first_change is None and line.plain[5:6] in {"+", "-"}:
+                    first_change = len(view.lines)
                 view.write(line)
-            view.scroll_home(animate=False)
+            view.scroll_to(y=first_change or 0, animate=False)
 
         def _ask_retranslate(self):
             files = self.query_one("#review-files", OptionList)
